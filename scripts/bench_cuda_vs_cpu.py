@@ -96,9 +96,9 @@ def main() -> int:
     ref = load_rgb(reference_path)
 
     if args.profile_gpu:
-        from magicmatch_core.gpu.pipeline import profile_gpu_pipeline
+        from magicmatch_core.gpu.pipeline_full_gpu import profile_full_gpu_pipeline
 
-        print(json.dumps(profile_gpu_pipeline(src, ref), indent=2))
+        print(json.dumps(profile_full_gpu_pipeline(src, ref), indent=2, default=str))
         return 0
 
     report: dict[str, object] = {

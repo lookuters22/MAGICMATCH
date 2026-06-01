@@ -73,11 +73,11 @@ def run_inference_from_images_cuda(
 
 def run_inference_from_images_cuda_tensors(
     source_hwc: "torch.Tensor | np.ndarray",
-    reference_hwc: np.ndarray,
+    reference_hwc: "torch.Tensor | np.ndarray",
     *,
     session: ort.InferenceSession | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Run color_match.onnx; source may be a CUDA tensor (skips CPU resize)."""
+    """Run color_match.onnx; source/ref may be CUDA tensors (GPU resize, single ORT sync)."""
     from .gpu.resize_torch import hwc_to_nhwc_numpy
 
     sess = session or get_session_cuda()
@@ -85,9 +85,13 @@ def run_inference_from_images_cuda_tensors(
         src_feed = hwc_to_nhwc_numpy(source_hwc)
     else:
         src_feed = _resize_hwc_to_nhwc(np.asarray(source_hwc, dtype=np.float32))
+    if _TORCH and isinstance(reference_hwc, torch.Tensor):
+        ref_feed = hwc_to_nhwc_numpy(reference_hwc)
+    else:
+        ref_feed = _resize_hwc_to_nhwc(np.asarray(reference_hwc, dtype=np.float32))
     feeds = {
         INPUT_NAMES[0]: src_feed,
-        INPUT_NAMES[1]: _resize_hwc_to_nhwc(reference_hwc),
+        INPUT_NAMES[1]: ref_feed,
     }
     out_map = {o.name: o for o in sess.get_outputs()}
     names = [out_map[OUTPUT_LUT3D].name, out_map[OUTPUT_LUT1D].name]
@@ -99,10 +103,10 @@ def build_merged_lut_with_base_cuda(
     source_hwc: np.ndarray,
     reference_hwc: np.ndarray,
 ) -> tuple[np.ndarray, dict]:
-    from .gpu.pipeline import build_merged_lut_probe_style_gpu
+    from .gpu.pipeline_full_gpu import build_merged_lut_full_gpu
 
-    merged, base, _feed = build_merged_lut_probe_style_gpu(source_hwc, reference_hwc)
-    return merged, base
+    state = build_merged_lut_full_gpu(source_hwc, reference_hwc)
+    return state.merged_lut, state.base_adjustments
 
 
 def color_match_session_info() -> dict[str, str | bool]:

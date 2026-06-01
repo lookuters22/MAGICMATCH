@@ -83,15 +83,17 @@ def _render_options() -> dict:
 class MagicMatchLUT:
     """Cached 25³ merged LUT + scene base adjustments between Build and Preview nodes."""
 
-    __slots__ = ("merged_lut", "base_adjustments")
+    __slots__ = ("merged_lut", "base_adjustments", "feed_tensor")
 
     def __init__(
         self,
         merged_lut: np.ndarray,
         base_adjustments: dict | None = None,
+        feed_tensor: torch.Tensor | None = None,
     ) -> None:
         self.merged_lut = np.asarray(merged_lut, dtype=np.float32).reshape(-1)
         self.base_adjustments = dict(base_adjustments) if base_adjustments else None
+        self.feed_tensor = feed_tensor
 
 
 def _image_batch_to_hwc(image: torch.Tensor) -> np.ndarray:

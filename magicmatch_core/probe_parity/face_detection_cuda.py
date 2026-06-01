@@ -79,7 +79,10 @@ def _get_face_bounding_boxes_cuda(hwc: np.ndarray, adjusted_gamma: float) -> lis
         sess = _portrait_session_cuda()
         tensor = _cpu._preprocess_detect(hwc, (640, 480), adjusted_gamma)
         prior = _cpu._prior_portrait()
+    return _run_detect_postprocess(sess, tensor, prior, w, h)
 
+
+def _run_detect_postprocess(sess, tensor, prior, w: int, h: int) -> list[dict]:
     raw = sess.run(None, {_cpu._session_input_name(sess): tensor})
     landmark, bbox, confidence = _cpu._unpack_detect_outputs(list(raw))
     loc = np.squeeze(bbox, axis=0)
@@ -280,6 +283,138 @@ def _detect_skin_condition_cuda(
         out.append({**result, "skin_condition": cond, "skin_percent": skin_pct})
         parsed += 1
     return out
+
+
+def _get_face_bounding_boxes_cuda_tensor(hwc_t, adjusted_gamma: float) -> list[dict]:
+    """GPU preprocess → single ORT feed sync for face detect."""
+    try:
+        import torch
+        from ..gpu.face_preprocess_torch import preprocess_detect_torch
+    except ImportError:
+        return _get_face_bounding_boxes_cuda(
+            np.clip(np.asarray(hwc_t.detach().cpu().numpy(), dtype=np.float32), 0.0, 1.0),
+            adjusted_gamma,
+        )
+
+    hwc_t = torch.clamp(hwc_t, 0.0, 1.0)
+    h, w, _ = hwc_t.shape
+    is_landscape = w >= h
+    if is_landscape:
+        sess = _landscape_session_cuda()
+        feed = preprocess_detect_torch(hwc_t, (480, 640), adjusted_gamma)
+        prior = _cpu._prior_landscape()
+    else:
+        sess = _portrait_session_cuda()
+        feed = preprocess_detect_torch(hwc_t, (640, 480), adjusted_gamma)
+        prior = _cpu._prior_portrait()
+    tensor = feed.detach().cpu().numpy().astype(np.float32, copy=False)
+    return _run_detect_postprocess(sess, tensor, prior, w, h)
+
+
+def _detect_skin_condition_cuda_tensor(hwc_t, face_results: list[dict], adjusted_gamma: float) -> list[dict]:
+    if not face_results:
+        return []
+    try:
+        import torch
+        from ..gpu.face_preprocess_torch import preprocess_skin_torch
+    except ImportError:
+        return _detect_skin_condition_cuda(
+            np.clip(np.asarray(hwc_t.detach().cpu().numpy(), dtype=np.float32), 0.0, 1.0),
+            face_results,
+            adjusted_gamma,
+        )
+
+    hwc_t = torch.clamp(hwc_t, 0.0, 1.0)
+    h, w, _ = hwc_t.shape
+    sess = _parse_session_cuda()
+    center = (w / 2.0, h * 0.4)
+    sorted_faces = sorted(
+        face_results,
+        key=lambda r: abs((r["face_box"][0] + r["face_box"][2]) / 2.0 - center[0])
+        + abs((r["face_box"][1] + r["face_box"][3]) / 2.0 - center[1]) * 0.5,
+    )
+    out: list[dict] = []
+    parsed = 0
+    for result in sorted_faces:
+        if parsed >= MAX_SKIN_FACES:
+            out.append(result)
+            continue
+        box = result["face_box"]
+        x1, y1, x2, y2 = box
+        crop_w = x2 - x1
+        crop_h = y2 - y1
+        if crop_h < 5 or crop_w < 5:
+            continue
+        crop = hwc_t[y1:y2, x1:x2]
+        tensor = preprocess_skin_torch(crop, adjusted_gamma).detach().cpu().numpy().astype(np.float32, copy=False)
+        skin_mask = sess.run(None, {"input": tensor})[0][0]
+        cond: list[list[bool]] = [[False] * crop_w for _ in range(crop_h)]
+        scale_x = FACE_PARSE_SIZE / crop_w
+        scale_y = FACE_PARSE_SIZE / crop_h
+        skin_count = 0
+        for x in range(crop_w):
+            for y in range(crop_h):
+                yi = int(y * scale_y)
+                xi = int(x * scale_x)
+                if skin_mask[yi, xi] > 0.6:
+                    cond[y][x] = True
+                    skin_count += 1
+        skin_pct = skin_count / max(1, crop_w * crop_h)
+        face_to_edge_w = min(box[0], w - 1 - box[2]) / w
+        face_to_bottom = (h - 1 - box[3]) / h
+        face_to_edge = min(face_to_edge_w, face_to_bottom)
+        face_to_top = box[1] / h
+        confidence = result.get("confidence") or 1.0
+        if skin_pct <= 0.02:
+            continue
+        if confidence < 0.97 and (
+            skin_pct <= 0.08
+            or (
+                skin_pct <= 0.18
+                and confidence < 0.93
+                and (face_to_edge <= 0.15 or face_to_top < 0.02 or confidence < 0.7)
+            )
+            or (skin_pct <= 0.1 and (face_to_edge <= 0.2 or face_to_top < 0.04 or confidence < 0.8))
+            or (
+                skin_pct <= 0.23
+                and confidence < 0.65
+                and (face_to_edge <= 0.3 or face_to_top < 0.06 or confidence < 0.58)
+            )
+        ):
+            continue
+        out.append({**result, "skin_condition": cond, "skin_percent": skin_pct})
+        parsed += 1
+    return out
+
+
+def detect_faces_cuda_from_tensor(hwc_t, *, adjusted_gamma: float = 1.0) -> list[dict]:
+    """Face detect + skin parse from CUDA tensor; GPU preprocess, minimal ORT sync."""
+    if not FACE_MODEL_DIR.is_dir():
+        return []
+    needed = (
+        FACE_MODEL_DIR / "face_detect_landscape.onnx",
+        FACE_MODEL_DIR / "face_detect_portrait.onnx",
+        FACE_MODEL_DIR / "face_parse.onnx",
+    )
+    if not all(p.is_file() for p in needed):
+        return []
+
+    import torch
+
+    hwc_t = torch.clamp(hwc_t, 0.0, 1.0)
+    h, w, _ = hwc_t.shape
+    results = _get_face_bounding_boxes_cuda_tensor(hwc_t, adjusted_gamma)
+    if len(results) > 1:
+        results = _cpu._filter_center_faces(results)
+    results = _detect_skin_condition_cuda_tensor(hwc_t, results, adjusted_gamma)
+    inverted_cpu = h > w and len(results) > 2 and all((r.get("confidence") or 0.0) >= 0.9 for r in results)
+    if inverted_cpu and len(results) > 2:
+        results.sort(
+            key=lambda r: (r.get("confidence") or 0.0) * (r.get("skin_percent") or 0.0),
+            reverse=True,
+        )
+        results = results[:2]
+    return results
 
 
 def detect_faces_cuda(hwc: np.ndarray, *, adjusted_gamma: float = 1.0) -> list[dict]:

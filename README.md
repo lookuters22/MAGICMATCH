@@ -98,6 +98,23 @@ After restart, look under **MAGICMATCH/CUDA (experimental)**:
 
 **GPU pipeline (CUDA nodes):** CUDA ONNX + GPU detection buffers + GPU develop@1600 + GPU full-res apply.
 
+### GPU Full pipeline (experimental)
+
+A **complete** hot-path port keeps detection buffers, luminance stats, face ONNX preprocess,
+develop@1600, full-res LUT apply, and net reference resize on GPU/Torch. Minimal CPU sync:
+JPEG q98 worker normalize, detection-sized downloads for face/color/WB parity helpers,
+256×256 reference JPEG/WebP round-trips, and single `.cpu().numpy()` feeds for ONNX.
+
+ComfyUI category: **MAGICMATCH/GPU Full (experimental)**
+
+| Class | Display name |
+|-------|----------------|
+| `MagicMatchBuildGPUFull` | MagicMatch Build LUT (GPU Full) |
+| `MagicMatchPreviewGPUFull` | MagicMatch Preview (GPU Full LUT) |
+| `MagicMatchGPUFull` | MagicMatch one-shot (GPU Full) |
+
+Set `MAGICMATCH_GPU_FULL_NODES=0` to hide GPU Full nodes.
+
 **CPU default nodes** under **MAGICMATCH** are unchanged.
 
 Set `MAGICMATCH_CUDA_NODES=0` before starting ComfyUI to hide CUDA nodes.
@@ -114,6 +131,16 @@ python scripts/parity_pair.py \
 
 # CPU vs CUDA timings + lut_hash compare
 python scripts/bench_cuda_vs_cpu.py \
+  ../polarrnext/standalone_probe/public/pair/source.png \
+  ../polarrnext/standalone_probe/public/pair/reference.jpg
+
+# Full GPU pipeline phase breakdown + parity report
+python scripts/bench_gpu_full.py \
+  ../polarrnext/standalone_probe/public/pair/source.png \
+  ../polarrnext/standalone_probe/public/pair/reference.jpg
+
+# Per-phase GPU timings only (via bench_cuda_vs_cpu)
+python scripts/bench_cuda_vs_cpu.py --profile-gpu \
   ../polarrnext/standalone_probe/public/pair/source.png \
   ../polarrnext/standalone_probe/public/pair/reference.jpg
 ```
