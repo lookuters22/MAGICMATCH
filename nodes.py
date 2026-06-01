@@ -13,7 +13,7 @@ from .magicmatch_core.apply import (
     RENDER_PROBE_EXPORT,
     apply_merged_lut_output,
 )
-from .magicmatch_core.inference import build_merged_lut
+from .magicmatch_core.inference import build_merged_lut_with_base
 from .magicmatch_core.live_cache import pack_live_cache
 from .magicmatch_core.probe_parity.profile_stage import (
     PROFILE_STAGE_OPTIONS,
@@ -81,12 +81,17 @@ def _render_options() -> dict:
 
 
 class MagicMatchLUT:
-    """Cached 25³ merged LUT between Build and Preview nodes."""
+    """Cached 25³ merged LUT + scene base adjustments between Build and Preview nodes."""
 
-    __slots__ = ("merged_lut",)
+    __slots__ = ("merged_lut", "base_adjustments")
 
-    def __init__(self, merged_lut: np.ndarray) -> None:
+    def __init__(
+        self,
+        merged_lut: np.ndarray,
+        base_adjustments: dict | None = None,
+    ) -> None:
         self.merged_lut = np.asarray(merged_lut, dtype=np.float32).reshape(-1)
+        self.base_adjustments = dict(base_adjustments) if base_adjustments else None
 
 
 def _image_batch_to_hwc(image: torch.Tensor) -> np.ndarray:
@@ -135,8 +140,8 @@ class MagicMatchBuild:
     def build(self, source: torch.Tensor, reference: torch.Tensor) -> tuple[MagicMatchLUT]:
         src = _image_batch_to_hwc(source)
         ref = _image_batch_to_hwc(reference)
-        merged = build_merged_lut(src, ref)
-        return (MagicMatchLUT(merged),)
+        merged, base = build_merged_lut_with_base(src, ref)
+        return (MagicMatchLUT(merged, base),)
 
 
 class MagicMatchPreview:
@@ -213,6 +218,7 @@ class MagicMatchPreview:
             render_mode=render_mode,
             lut_encoding=lut_encoding,
             profile_stage=profile_stage,
+            base_adjustments=lut.base_adjustments,
         )
         cache = pack_live_cache(src, lut.merged_lut)
         return {
@@ -282,7 +288,7 @@ class MagicMatch:
         lut_encoding = _normalize_lut_encoding(lut_encoding)
         render_mode = _normalize_render_mode(render_mode)
         profile_stage = normalize_profile_stage(profile_stage)
-        merged = build_merged_lut(src, ref)
+        merged, base = build_merged_lut_with_base(src, ref)
         out = apply_merged_lut_output(
             src,
             merged,
@@ -290,6 +296,7 @@ class MagicMatch:
             render_mode=render_mode,
             lut_encoding=lut_encoding,
             profile_stage=profile_stage,
+            base_adjustments=base,
         )
         return (_hwc_to_image(out),)
 

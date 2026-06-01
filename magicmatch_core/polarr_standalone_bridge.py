@@ -1,13 +1,9 @@
 """
-Optional bridge to Polarr Next Probe full WebGL export (RAW + LR Profile).
+Legacy notes on standalone_probe WebGL export.
 
-The probe applies color match through renderPolarrFullRcdRawPreview + adjustments.frag
-(profile look tables, tone curves, display-p3). That path is not replicated in Python.
-
-For pixel-perfect parity with Save Image from standalone_probe, export from the probe
-with the same source/reference, then compare to Comfy polarr_probe mode on JPEG/PNG.
-
-Future: headless CLI calling standalone_probe render stack.
+Full RAW + Lightroom-profile export is still richer than the in-Comfy Python stack,
+but MAGICMATCH now implements probe-parity build/apply in magicmatch_core/probe_parity/
+(auto-light, develop@1600→256 net feed, profile look table, probe_export render mode).
 """
 
 from __future__ import annotations

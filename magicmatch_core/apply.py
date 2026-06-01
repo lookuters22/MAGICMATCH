@@ -20,6 +20,7 @@ def apply_merged_lut_output(
     render_mode: str = RENDER_PROBE_EXPORT,
     lut_encoding: str = "srgb_srgb",
     profile_stage: str = "current_profile_stages",
+    base_adjustments: dict | None = None,
 ) -> np.ndarray:
     strength = float(np.clip(strength, 0.0, 1.0))
     if render_mode == RENDER_NUMPY:
@@ -31,6 +32,7 @@ def apply_merged_lut_output(
             srgb_hwc,
             merged_lut,
             strength,
+            base_adjustments=base_adjustments,
             profile_stage=profile_stage,
             lut_encoding=lut_encoding,
         )

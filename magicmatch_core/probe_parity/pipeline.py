@@ -13,12 +13,11 @@ from .reference import NET_INPUT_SIZE, NET_LONG_EDGE, fit_long_edge, prepare_net
 
 
 def _render_for_net(source_hwc: np.ndarray, adjustments: dict) -> np.ndarray:
-    """1600-edge develop render → 256 ONNX input (inputWithPreset)."""
+    """1600-edge develop render → 256 ONNX input (inputWithPreset, bitmap Standard)."""
     long = fit_long_edge(source_hwc, NET_LONG_EDGE)
     rendered = render_srgb_develop(
         long,
         adjustments,
-        disable_profile_look=False,
         force_color_look=False,
     )
     return resize_hwc(rendered, NET_INPUT_SIZE, NET_INPUT_SIZE, high_quality=True)
@@ -69,6 +68,5 @@ def apply_probe_export(
         merged_lut=merged_lut,
         lut_strength=strength,
         lut_encoding=lut_encoding,
-        disable_profile_look=stage["disableProfileLookTable"],
         force_color_look=stage["forceColorLookTableWithUserLut"],
     )

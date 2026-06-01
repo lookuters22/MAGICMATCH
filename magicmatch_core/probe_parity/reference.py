@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import io
+
 import numpy as np
 
 NET_LONG_EDGE = 1600
 NET_INPUT_SIZE = 256
-REF_LONG_EDGE = 1600
+REF_WEBP_QUALITY = 92
 
 
 def fit_to_size(width: int, height: int, box: tuple[int, int]) -> tuple[int, int]:
@@ -35,7 +37,23 @@ def fit_long_edge(hwc: np.ndarray, long_edge: int) -> np.ndarray:
     return resize_hwc(hwc, nw, nh, high_quality=True)
 
 
+def webp_roundtrip(hwc: np.ndarray, *, quality: int = REF_WEBP_QUALITY) -> np.ndarray:
+    """Match probe referenceWebpData256x256 encode/decode (bitmapToWebPData q92)."""
+    from PIL import Image
+
+    hwc = np.clip(np.asarray(hwc, dtype=np.float32), 0.0, 1.0)
+    arr = (hwc * 255.0).astype(np.uint8)
+    buf = io.BytesIO()
+    Image.fromarray(arr, "RGB").save(buf, format="WEBP", quality=quality)
+    buf.seek(0)
+    decoded = np.asarray(Image.open(buf).convert("RGB"), dtype=np.float32) / 255.0
+    return np.clip(decoded, 0.0, 1.0)
+
+
 def prepare_net_reference(reference_hwc: np.ndarray) -> np.ndarray:
-    """Reference → longest edge 1600 → 256 (probe ref cache path)."""
-    ref = fit_long_edge(reference_hwc, REF_LONG_EDGE)
-    return resize_hwc(ref, NET_INPUT_SIZE, NET_INPUT_SIZE, high_quality=True)
+    """
+    Probe getReferenceColorMatchFeaturesAndSetCache when ImageBitmap is passed:
+    full-res → 256 high-quality resize → WebP q92 round-trip (worker cache feed).
+    """
+    ref256 = resize_hwc(reference_hwc, NET_INPUT_SIZE, NET_INPUT_SIZE, high_quality=True)
+    return webp_roundtrip(ref256)

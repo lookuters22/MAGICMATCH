@@ -288,7 +288,6 @@ def render_srgb_develop(
     merged_lut: np.ndarray | None = None,
     lut_strength: float = 1.0,
     lut_encoding: str = "srgb_srgb",
-    disable_profile_look: bool = False,
     force_color_look: bool = False,
     as_shot_temp: float = DEFAULT_AS_SHOT_TEMP,
     as_shot_tint: float = DEFAULT_AS_SHOT_TINT,
@@ -330,12 +329,13 @@ def render_srgb_develop(
     if saturation != 0.0:
         rgb = _apply_saturation(rgb, saturation)
 
-    profile_dims = profile_look_dims()
-    profile_table = load_adobe_profile_look_table()
+    # Bitmap/JPEG Standard (Comfy tensors): no DCP profile look, no Adobe color look.
+    # Probe polarrFullRawRenderer uses COLOR_PROFILE_STANDARD with null profile tables.
+    # force_color_look ≈ renderColorLookTableWithUserLut (Adobe color table, optional with LUT).
     if force_color_look:
-        rgb = _apply_hsv_look_table(rgb, profile_dims, profile_table)
-    if not disable_profile_look:
-        rgb = _apply_hsv_look_table(rgb, profile_dims, profile_table)
+        dims = profile_look_dims()
+        table = load_adobe_profile_look_table()
+        rgb = _apply_hsv_look_table(rgb, dims, table)
 
     hue = _rgb_to_hue(rgb)
     rgb = _tonemap(rgb)

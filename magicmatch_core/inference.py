@@ -26,12 +26,19 @@ _SESSION: ort.InferenceSession | None = None
 
 
 def _resize_hwc_to_nhwc(image_hwc: np.ndarray, size: int = IMAGE_SIZE) -> np.ndarray:
-    """H×W×3 float [0,1] → [1, size, size, 3] PIL bilinear (same as probe load_rgb_nhwc)."""
+    """
+    H×W×3 float [0,1] → [1, size, size, 3].
+
+    Matches neural-color-match.ts createTensor: high-quality downscale when needed,
+    then tf.image.resizeBilinear (always, even at 256×256).
+    """
     from PIL import Image
 
-    image_hwc = np.asarray(image_hwc, dtype=np.float32)
-    arr = (np.clip(image_hwc, 0, 1) * 255.0).astype(np.uint8)
+    image_hwc = np.clip(np.asarray(image_hwc, dtype=np.float32), 0.0, 1.0)
+    arr = (image_hwc * 255.0).astype(np.uint8)
     pil = Image.fromarray(arr, "RGB")
+    if pil.size != (size, size):
+        pil = pil.resize((size, size), Image.Resampling.LANCZOS)
     pil = pil.resize((size, size), Image.Resampling.BILINEAR)
     out = np.asarray(pil, dtype=np.float32) / 255.0
     return np.clip(out[np.newaxis, ...], 0.0, 1.0)
@@ -69,10 +76,17 @@ def run_inference_from_images(
 
 
 def build_merged_lut(source_hwc: np.ndarray, reference_hwc: np.ndarray) -> np.ndarray:
+    merged, _base = build_merged_lut_with_base(source_hwc, reference_hwc)
+    return merged
+
+
+def build_merged_lut_with_base(
+    source_hwc: np.ndarray,
+    reference_hwc: np.ndarray,
+) -> tuple[np.ndarray, dict]:
     from .probe_parity.pipeline import build_merged_lut_probe_style
 
-    merged, _base = build_merged_lut_probe_style(source_hwc, reference_hwc)
-    return merged
+    return build_merged_lut_probe_style(source_hwc, reference_hwc)
 
 
 def build_merged_lut_legacy(source_hwc: np.ndarray, reference_hwc: np.ndarray) -> np.ndarray:
