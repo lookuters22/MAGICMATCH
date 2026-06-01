@@ -1,13 +1,12 @@
 /**
- * In-node live preview — WebGL merged-LUT apply (matches CPU path after first run).
+ * In-node live preview — WebGL merged-LUT (same reshape as CPU path).
  */
 import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
 
 const PREVIEW_CLASS = "MagicMatchPreview";
 const LUT_SIZE = 25;
-const MAX_DISPLAY_W = 280;
-const MAX_DISPLAY_H = 200;
+const MIN_PREVIEW_W = 80;
 
 function b64ToArrayBuffer(b64) {
   const bin = atob(b64);
@@ -16,18 +15,38 @@ function b64ToArrayBuffer(b64) {
   return buf.buffer;
 }
 
-/** RGBc merged LUT → 3D texture texels (x=B, y=G, z=R), RGBA8 for broad GPU support */
-function mergedLutTo3DUint8(floats) {
+/** RGBc merged 25³ → cBGR flat (same as reshape_merged_lut_for_apply in lut.py) */
+function reshapeMergedLutForApply(mergedRgb) {
   const size = LUT_SIZE;
-  const tex = new Uint8Array(size * size * size * 4);
+  const merged = mergedRgb;
+  const reshaped = new Float32Array(size * size * size * 3);
   for (let r = 0; r < size; r++) {
     for (let g = 0; g < size; g++) {
       for (let b = 0; b < size; b++) {
-        const src = (r * size * size + g * size + b) * 3;
-        const dst = (b * size * size + g * size + r) * 4;
-        tex[dst] = Math.round(Math.max(0, Math.min(1, floats[src])) * 255);
-        tex[dst + 1] = Math.round(Math.max(0, Math.min(1, floats[src + 1])) * 255);
-        tex[dst + 2] = Math.round(Math.max(0, Math.min(1, floats[src + 2])) * 255);
+        for (let c = 0; c < 3; c++) {
+          const src = (r * size * size + g * size + b) * 3 + c;
+          const dst = c * size * size * size + b * size * size + g * size + r;
+          reshaped[dst] = merged[src];
+        }
+      }
+    }
+  }
+  return reshaped;
+}
+
+/** cBGR flat → 3D texel (x=B,y=G,z=R) with RGB = output R,G,B at that voxel */
+function reshapedLutTo3DUint8(reshaped) {
+  const size = LUT_SIZE;
+  const n = size * size * size;
+  const tex = new Uint8Array(n * 4);
+  for (let b = 0; b < size; b++) {
+    for (let g = 0; g < size; g++) {
+      for (let r = 0; r < size; r++) {
+        const idx = b * size * size + g * size + r;
+        const dst = idx * 4;
+        tex[dst] = byte(reshaped[0 * n + idx]);
+        tex[dst + 1] = byte(reshaped[1 * n + idx]);
+        tex[dst + 2] = byte(reshaped[2 * n + idx]);
         tex[dst + 3] = 255;
       }
     }
@@ -35,10 +54,15 @@ function mergedLutTo3DUint8(floats) {
   return tex;
 }
 
+function byte(v) {
+  return Math.round(Math.max(0, Math.min(1, v)) * 255);
+}
+
 class LivePreviewPanel {
   constructor(node) {
     this.node = node;
     this.cache = null;
+    this._img = null;
     this.gl = null;
     this.prog = null;
     this.lutTex = null;
@@ -46,8 +70,9 @@ class LivePreviewPanel {
     this.uStrength = null;
     this.uSrc = null;
     this.uLut = null;
-    this.displayW = MAX_DISPLAY_W;
-    this.displayH = MAX_DISPLAY_H;
+    this.displayW = 200;
+    this.displayH = 200;
+    this.aspect = 1;
     this._srcCanvas = document.createElement("canvas");
 
     this.wrap = document.createElement("div");
@@ -60,9 +85,7 @@ class LivePreviewPanel {
 
     this.canvas = document.createElement("canvas");
     this.canvas.style.cssText =
-      "display:block;width:100%;max-height:" +
-      MAX_DISPLAY_H +
-      "px;background:#1a1a1a;border-radius:4px;object-fit:contain;";
+      "display:block;width:100%;height:auto;background:#1a1a1a;border-radius:4px;";
 
     this.wrap.appendChild(this.hint);
     this.wrap.appendChild(this.canvas);
@@ -145,21 +168,18 @@ class LivePreviewPanel {
     return true;
   }
 
-  _resizeNode() {
-    const h = this.displayH + 32;
-    if (this.node.setSize && this.node.size) {
-      this.node.setSize([this.node.size[0], h]);
-    }
-    this.node.onResize?.(this.node.size);
+  layoutFromNodeWidth(nodeWidth) {
+    const w = Math.max(MIN_PREVIEW_W, Math.floor(nodeWidth - 24));
+    const h = Math.max(MIN_PREVIEW_W, Math.round(w / this.aspect));
+    this.displayW = w;
+    this.displayH = h;
+    return [w, h + 32];
   }
 
-  setCache(cache) {
-    this.cache = cache;
-    if (!this.initGl()) return;
-
-    const gl = this.gl;
+  uploadLut(gl, cache) {
     const floats = new Float32Array(b64ToArrayBuffer(cache.lut));
-    const texData = mergedLutTo3DUint8(floats);
+    const reshaped = reshapeMergedLutForApply(floats);
+    const texData = reshapedLutTo3DUint8(reshaped);
 
     gl.bindTexture(gl.TEXTURE_3D, this.lutTex);
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
@@ -179,42 +199,54 @@ class LivePreviewPanel {
       gl.UNSIGNED_BYTE,
       texData,
     );
+  }
+
+  uploadSource(gl) {
+    if (!this._img) return;
+    const ctx = this._srcCanvas.getContext("2d");
+    this._srcCanvas.width = this.displayW;
+    this._srcCanvas.height = this.displayH;
+    ctx.drawImage(this._img, 0, 0, this.displayW, this.displayH);
+
+    gl.bindTexture(gl.TEXTURE_2D, this.srcTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(
+      gl.TEXTURE_2D,
+      0,
+      gl.RGBA,
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      this._srcCanvas,
+    );
+  }
+
+  refreshLayout() {
+    if (!this.cache || !this.node.size) return;
+    this.layoutFromNodeWidth(this.node.size[0]);
+    this.canvas.width = this.displayW;
+    this.canvas.height = this.displayH;
+    if (this.gl) {
+      this.uploadSource(this.gl);
+      this.render(this.getStrength());
+    }
+  }
+
+  setCache(cache) {
+    this.cache = cache;
+    this.aspect = cache.w / cache.h;
+    if (!this.initGl()) return;
+
+    const gl = this.gl;
+    this.uploadLut(gl, cache);
 
     const img = new Image();
     img.onload = () => {
-      const scale = Math.min(
-        1,
-        MAX_DISPLAY_W / img.width,
-        MAX_DISPLAY_H / img.height,
-      );
-      this.displayW = Math.max(1, Math.round(img.width * scale));
-      this.displayH = Math.max(1, Math.round(img.height * scale));
-
-      this.canvas.width = this.displayW;
-      this.canvas.height = this.displayH;
-      this._resizeNode();
-
-      const ctx = this._srcCanvas.getContext("2d");
-      this._srcCanvas.width = this.displayW;
-      this._srcCanvas.height = this.displayH;
-      ctx.drawImage(img, 0, 0, this.displayW, this.displayH);
-
-      gl.bindTexture(gl.TEXTURE_2D, this.srcTex);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      gl.texImage2D(
-        gl.TEXTURE_2D,
-        0,
-        gl.RGBA,
-        gl.RGBA,
-        gl.UNSIGNED_BYTE,
-        this._srcCanvas,
-      );
-
+      this._img = img;
       this.hint.textContent = "Live preview (slider — no re-queue)";
-      this.render(this.getStrength());
+      this.refreshLayout();
     };
     img.src = "data:image/png;base64," + cache.src_png;
   }
@@ -267,7 +299,17 @@ app.registerExtension({
     });
 
     domWidget.computeSize = function (width) {
-      return [Math.min(width, 320), panel.displayH + 32];
+      if (panel.cache) {
+        return panel.layoutFromNodeWidth(width);
+      }
+      return [width, 200];
+    };
+
+    const origOnResize = node.onResize;
+    node.onResize = function (size) {
+      const res = origOnResize?.apply(this, arguments);
+      panel.refreshLayout();
+      return res;
     };
 
     const strengthWidget = node.widgets?.find((w) => w.name === "strength");
