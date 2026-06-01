@@ -25,7 +25,33 @@ LUT_ENCODING_OPTIONS = [
     "linear_adobe",
 ]
 
-RENDER_MODE_OPTIONS = [RENDER_POLARR_PROBE, RENDER_NUMPY]
+# Include legacy aliases so pre-update workflows pass ComfyUI combo validation.
+RENDER_MODE_COMBO = [
+    RENDER_POLARR_PROBE,
+    RENDER_NUMPY,
+    "polarr",
+    "numpy",
+]
+
+_RENDER_MODE_ALIASES = {
+    "polarr": RENDER_POLARR_PROBE,
+    "numpy": RENDER_NUMPY,
+}
+
+
+def _normalize_lut_encoding(value) -> str:
+    if isinstance(value, str) and value in LUT_ENCODING_OPTIONS:
+        return value
+    return "srgb_srgb"
+
+
+def _normalize_render_mode(value) -> str:
+    if isinstance(value, str):
+        if value in _RENDER_MODE_ALIASES:
+            return _RENDER_MODE_ALIASES[value]
+        if value in (RENDER_POLARR_PROBE, RENDER_NUMPY):
+            return value
+    return RENDER_POLARR_PROBE
 
 
 class MagicMatchLUT:
@@ -53,13 +79,14 @@ def _hwc_to_image(hwc: np.ndarray) -> torch.Tensor:
 
 
 def _render_options() -> dict:
+    """Required combos — optional COMBO inputs break validation on saved workflows."""
     return {
         "lut_encoding": (
             LUT_ENCODING_OPTIONS,
             {"default": "srgb_srgb"},
         ),
         "render_mode": (
-            RENDER_MODE_OPTIONS,
+            RENDER_MODE_COMBO,
             {"default": RENDER_POLARR_PROBE},
         ),
     }
@@ -120,8 +147,8 @@ class MagicMatchPreview:
                         "display": "slider",
                     },
                 ),
+                **_render_options(),
             },
-            "optional": _render_options(),
         }
 
     RETURN_TYPES = ("IMAGE",)
@@ -150,6 +177,8 @@ class MagicMatchPreview:
         render_mode: str = RENDER_POLARR_PROBE,
     ) -> dict:
         src = _image_batch_to_hwc(source)
+        lut_encoding = _normalize_lut_encoding(lut_encoding)
+        render_mode = _normalize_render_mode(render_mode)
         out = apply_merged_lut_output(
             src,
             lut.merged_lut,
@@ -183,8 +212,8 @@ class MagicMatch:
                         "display": "slider",
                     },
                 ),
+                **_render_options(),
             },
-            "optional": _render_options(),
         }
 
     RETURN_TYPES = ("IMAGE",)
@@ -211,6 +240,8 @@ class MagicMatch:
     ) -> tuple[torch.Tensor]:
         src = _image_batch_to_hwc(source)
         ref = _image_batch_to_hwc(reference)
+        lut_encoding = _normalize_lut_encoding(lut_encoding)
+        render_mode = _normalize_render_mode(render_mode)
         merged = build_merged_lut(src, ref)
         out = apply_merged_lut_output(
             src,
