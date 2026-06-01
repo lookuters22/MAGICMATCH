@@ -1,12 +1,13 @@
 /**
- * In-node live preview for MagicMatch Preview (WebGL LUT + strength slider).
- * Run the workflow once to cache; then drag strength without re-queueing.
+ * In-node live preview — WebGL merged-LUT apply (matches CPU path after first run).
  */
 import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
 
 const PREVIEW_CLASS = "MagicMatchPreview";
 const LUT_SIZE = 25;
+const MAX_DISPLAY_W = 280;
+const MAX_DISPLAY_H = 200;
 
 function b64ToArrayBuffer(b64) {
   const bin = atob(b64);
@@ -15,17 +16,19 @@ function b64ToArrayBuffer(b64) {
   return buf.buffer;
 }
 
-function mergedLutTo3DTextureData(floats) {
+/** RGBc merged LUT → 3D texture texels (x=B, y=G, z=R), RGBA8 for broad GPU support */
+function mergedLutTo3DUint8(floats) {
   const size = LUT_SIZE;
-  const tex = new Float32Array(size * size * size * 3);
+  const tex = new Uint8Array(size * size * size * 4);
   for (let r = 0; r < size; r++) {
     for (let g = 0; g < size; g++) {
       for (let b = 0; b < size; b++) {
         const src = (r * size * size + g * size + b) * 3;
-        const dst = (b * size * size + g * size + r) * 3;
-        tex[dst] = floats[src];
-        tex[dst + 1] = floats[src + 1];
-        tex[dst + 2] = floats[src + 2];
+        const dst = (b * size * size + g * size + r) * 4;
+        tex[dst] = Math.round(Math.max(0, Math.min(1, floats[src])) * 255);
+        tex[dst + 1] = Math.round(Math.max(0, Math.min(1, floats[src + 1])) * 255);
+        tex[dst + 2] = Math.round(Math.max(0, Math.min(1, floats[src + 2])) * 255);
+        tex[dst + 3] = 255;
       }
     }
   }
@@ -41,22 +44,25 @@ class LivePreviewPanel {
     this.lutTex = null;
     this.srcTex = null;
     this.uStrength = null;
-    this.previewH = 200;
+    this.uSrc = null;
+    this.uLut = null;
+    this.displayW = MAX_DISPLAY_W;
+    this.displayH = MAX_DISPLAY_H;
+    this._srcCanvas = document.createElement("canvas");
 
     this.wrap = document.createElement("div");
-    this.wrap.style.width = "100%";
-    this.wrap.style.marginTop = "6px";
+    this.wrap.style.cssText =
+      "width:100%;margin-top:6px;overflow:hidden;box-sizing:border-box;";
 
     this.hint = document.createElement("div");
     this.hint.textContent = "Run workflow once → live slider preview";
     this.hint.style.cssText = "font-size:11px;color:#999;margin-bottom:4px;";
 
     this.canvas = document.createElement("canvas");
-    this.canvas.style.width = "100%";
-    this.canvas.style.height = "auto";
-    this.canvas.style.display = "block";
-    this.canvas.style.background = "#1a1a1a";
-    this.canvas.style.borderRadius = "4px";
+    this.canvas.style.cssText =
+      "display:block;width:100%;max-height:" +
+      MAX_DISPLAY_H +
+      "px;background:#1a1a1a;border-radius:4px;object-fit:contain;";
 
     this.wrap.appendChild(this.hint);
     this.wrap.appendChild(this.canvas);
@@ -75,7 +81,7 @@ class LivePreviewPanel {
     in vec2 a_pos;
     out vec2 v_uv;
     void main() {
-      v_uv = a_pos * 0.5 + 0.5;
+      v_uv = vec2(a_pos.x * 0.5 + 0.5, 1.0 - (a_pos.y * 0.5 + 0.5));
       gl_Position = vec4(a_pos, 0.0, 1.0);
     }`;
 
@@ -92,7 +98,7 @@ class LivePreviewPanel {
       vec3 coord = vec3(src.b, src.g, src.r);
       vec3 mapped = texture(u_lut, coord).rgb;
       vec3 out_rgb = mix(src, mapped, u_strength);
-      outColor = vec4(out_rgb, 1.0);
+      outColor = vec4(clamp(out_rgb, 0.0, 1.0), 1.0);
     }`;
 
     const compile = (type, src) => {
@@ -120,6 +126,8 @@ class LivePreviewPanel {
     }
     this.prog = prog;
     this.uStrength = gl.getUniformLocation(prog, "u_strength");
+    this.uSrc = gl.getUniformLocation(prog, "u_src");
+    this.uLut = gl.getUniformLocation(prog, "u_lut");
 
     const buf = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, buf);
@@ -137,13 +145,21 @@ class LivePreviewPanel {
     return true;
   }
 
+  _resizeNode() {
+    const h = this.displayH + 32;
+    if (this.node.setSize && this.node.size) {
+      this.node.setSize([this.node.size[0], h]);
+    }
+    this.node.onResize?.(this.node.size);
+  }
+
   setCache(cache) {
     this.cache = cache;
     if (!this.initGl()) return;
 
     const gl = this.gl;
     const floats = new Float32Array(b64ToArrayBuffer(cache.lut));
-    const texData = mergedLutTo3DTextureData(floats);
+    const texData = mergedLutTo3DUint8(floats);
 
     gl.bindTexture(gl.TEXTURE_3D, this.lutTex);
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
@@ -154,29 +170,48 @@ class LivePreviewPanel {
     gl.texImage3D(
       gl.TEXTURE_3D,
       0,
-      gl.RGB32F,
+      gl.RGBA,
       LUT_SIZE,
       LUT_SIZE,
       LUT_SIZE,
       0,
-      gl.RGB,
-      gl.FLOAT,
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
       texData,
     );
 
     const img = new Image();
     img.onload = () => {
-      this.canvas.width = img.width;
-      this.canvas.height = img.height;
-      this.previewH = Math.min(360, Math.max(120, img.height));
-      this.node.setSize?.(this.node.size);
+      const scale = Math.min(
+        1,
+        MAX_DISPLAY_W / img.width,
+        MAX_DISPLAY_H / img.height,
+      );
+      this.displayW = Math.max(1, Math.round(img.width * scale));
+      this.displayH = Math.max(1, Math.round(img.height * scale));
+
+      this.canvas.width = this.displayW;
+      this.canvas.height = this.displayH;
+      this._resizeNode();
+
+      const ctx = this._srcCanvas.getContext("2d");
+      this._srcCanvas.width = this.displayW;
+      this._srcCanvas.height = this.displayH;
+      ctx.drawImage(img, 0, 0, this.displayW, this.displayH);
 
       gl.bindTexture(gl.TEXTURE_2D, this.srcTex);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+      gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.RGBA,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
+        this._srcCanvas,
+      );
 
       this.hint.textContent = "Live preview (slider — no re-queue)";
       this.render(this.getStrength());
@@ -192,14 +227,14 @@ class LivePreviewPanel {
   render(strength) {
     if (!this.cache || !this.gl || !this.prog) return;
     const gl = this.gl;
-    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    gl.viewport(0, 0, this.displayW, this.displayH);
     gl.useProgram(this.prog);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.srcTex);
-    gl.uniform1i(gl.getUniformLocation(this.prog, "u_src"), 0);
+    gl.uniform1i(this.uSrc, 0);
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_3D, this.lutTex);
-    gl.uniform1i(gl.getUniformLocation(this.prog, "u_lut"), 1);
+    gl.uniform1i(this.uLut, 1);
     gl.uniform1f(this.uStrength, Math.max(0, Math.min(1, strength)));
     gl.drawArrays(gl.TRIANGLES, 0, 6);
   }
@@ -232,8 +267,7 @@ app.registerExtension({
     });
 
     domWidget.computeSize = function (width) {
-      const h = panel.previewH + 28;
-      return [width, h];
+      return [Math.min(width, 320), panel.displayH + 32];
     };
 
     const strengthWidget = node.widgets?.find((w) => w.name === "strength");
@@ -251,8 +285,10 @@ app.registerExtension({
       const out = detail?.output;
       if (!out?.magicmatch_live?.length) return;
 
-      const nodeId = detail.display_node || detail.node;
-      const graphNode = app.graph.getNodeById?.(nodeId) ?? app.graph._nodes_by_id?.[nodeId];
+      const nodeId = detail.display_node ?? detail.node;
+      const graphNode =
+        app.graph.getNodeById?.(nodeId) ??
+        app.graph._nodes_by_id?.[nodeId];
       if (!graphNode || graphNode.comfyClass !== PREVIEW_CLASS) return;
 
       getPanel(graphNode).setCache(out.magicmatch_live[0]);

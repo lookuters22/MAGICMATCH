@@ -51,7 +51,7 @@ Use **Build** + **Preview** so changing the slider only re-applies the LUT (fast
 3. Drag **strength** — preview updates **instantly** in the node (WebGL, no workflow re-run).
 4. When the look is right, **Queue Prompt** once more so the **image** output matches the slider, then save/export.
 
-Live preview uses a fast GPU blend for scrubbing; the queued **image** output uses the full CPU LUT path (same as before).
+Live preview uses WebGL (merged 25³ LUT + strength mix). Mid-strength may differ slightly from the queued **image** output, which uses the full CPU path — queue once more before export.
 
 **MagicMatch (one-shot)** combines build + apply in one node (simpler, slower when you change strength).
 
