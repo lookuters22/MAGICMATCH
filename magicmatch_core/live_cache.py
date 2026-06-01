@@ -7,7 +7,7 @@ import io
 
 import numpy as np
 
-LIVE_PREVIEW_MAX_EDGE = 1024
+LIVE_PREVIEW_MAX_EDGE = 2048
 
 
 def _downscale_hwc(hwc: np.ndarray, max_edge: int) -> np.ndarray:
