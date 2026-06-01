@@ -10,6 +10,7 @@ from .base_adjustments import estimate_base_adjustments
 from .develop import render_srgb_develop
 from .profile_stage import ProfileStageFlags, normalize_profile_stage, profile_stage_flags
 from .reference import NET_INPUT_SIZE, NET_LONG_EDGE, fit_long_edge, prepare_net_reference, resize_hwc
+from .wb import DEFAULT_AS_SHOT_TEMP, DEFAULT_AS_SHOT_TINT
 
 
 def _render_for_net(source_hwc: np.ndarray, adjustments: dict) -> np.ndarray:
@@ -69,4 +70,6 @@ def apply_probe_export(
         lut_strength=strength,
         lut_encoding=lut_encoding,
         force_color_look=stage["forceColorLookTableWithUserLut"],
+        as_shot_temp=DEFAULT_AS_SHOT_TEMP,
+        as_shot_tint=DEFAULT_AS_SHOT_TINT,
     )

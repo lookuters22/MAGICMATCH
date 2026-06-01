@@ -60,7 +60,8 @@ ADAPTATION_BRADFORD_INV = np.array(
     dtype=np.float64,
 )
 
-DEFAULT_AS_SHOT_TEMP = 5500.0
+# Bitmap/JPEG: Photo.ts + probe polarrFullRawRenderer hard-code 5000K / 0 tint.
+DEFAULT_AS_SHOT_TEMP = 5000.0
 DEFAULT_AS_SHOT_TINT = 0.0
 
 

@@ -17,9 +17,10 @@ from .color_match_features import extract_color_match_features
 from .face_detection import detect_faces
 from .luminance import get_adjusted_gamma, get_auto_light_params, get_luminance_statistics
 from .reference import fit_to_size, fit_long_edge, resize_hwc
+from .wb import DEFAULT_AS_SHOT_TEMP, DEFAULT_AS_SHOT_TINT
 
-BITMAP_AS_SHOT_TEMP = 5000.0
-BITMAP_AS_SHOT_TINT = 0.0
+BITMAP_AS_SHOT_TEMP = DEFAULT_AS_SHOT_TEMP
+BITMAP_AS_SHOT_TINT = DEFAULT_AS_SHOT_TINT
 DETECTION_LARGE_EDGE = 2000
 DETECTION_SMALL_EDGE = 300
 
