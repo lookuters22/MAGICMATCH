@@ -1,11 +1,13 @@
 """
-Experimental ComfyUI nodes — CUDA one-shot (1ccd29d-style GPU develop + apply).
+Experimental ComfyUI nodes — CUDA ONNX build with CPU parity develop/apply.
 
-CPU nodes in nodes.py are unchanged. Build uses GPU torch develop + CUDA ONNX;
-one-shot apply uses GPU develop/LUT (pipeline_v1), not the CPU parity stack.
+Output should match MagicMatch (one-shot) under MAGICMATCH; only color_match.onnx
+uses CUDA when available. Set MAGICMATCH_CUDA_GPU_APPLY=1 for legacy GPU apply (brighter).
 """
 
 from __future__ import annotations
+
+import os
 
 import torch
 
@@ -23,8 +25,12 @@ from .nodes import (
 from .magicmatch_core.apply import RENDER_PROBE_EXPORT, apply_merged_lut_output
 
 
+def _cuda_gpu_apply_enabled() -> bool:
+    return os.environ.get("MAGICMATCH_CUDA_GPU_APPLY", "0") == "1"
+
+
 class MagicMatchBuildCUDA:
-    """Analyze source + reference (GPU develop + CUDA ONNX)."""
+    """Analyze source + reference (CPU parity build + CUDA ONNX)."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -40,8 +46,7 @@ class MagicMatchBuildCUDA:
     FUNCTION = "build"
     CATEGORY = "MAGICMATCH/CUDA (experimental)"
     DESCRIPTION = (
-        "Build merged LUT: GPU detection/develop prep + CUDA ONNX. "
-        "Same build path as MagicMatch one-shot (CUDA)."
+        "Build merged LUT: CPU parity scene extract + develop@1600, CUDA color_match ONNX."
     )
 
     @classmethod
@@ -62,7 +67,7 @@ class MagicMatchBuildCUDA:
 
 
 class MagicMatchCUDA:
-    """One-shot GPU color match (1ccd29d path: GPU build + GPU apply)."""
+    """One-shot color match — CPU parity apply by default; CUDA ONNX build."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -88,7 +93,10 @@ class MagicMatchCUDA:
     RETURN_NAMES = ("image",)
     FUNCTION = "match"
     CATEGORY = "MAGICMATCH/CUDA (experimental)"
-    DESCRIPTION = "One-shot: GPU build + GPU probe_export apply (1ccd29d-style path)."
+    DESCRIPTION = (
+        "Matches MagicMatch (one-shot) look; CUDA accelerates color_match.onnx only. "
+        "MAGICMATCH_CUDA_GPU_APPLY=1 enables legacy GPU apply (may look brighter)."
+    )
 
     @classmethod
     def IS_CHANGED(
@@ -106,7 +114,7 @@ class MagicMatchCUDA:
             return float("nan")
         s = hashlib.sha1(source.detach().cpu().numpy().tobytes()).hexdigest()[:16]
         r = hashlib.sha1(reference.detach().cpu().numpy().tobytes()).hexdigest()[:16]
-        return (s, r, float(strength), lut_encoding, render_mode, profile_stage)
+        return (s, r, float(strength), lut_encoding, render_mode, profile_stage, _cuda_gpu_apply_enabled())
 
     def match(
         self,
@@ -125,7 +133,7 @@ class MagicMatchCUDA:
         render_mode = _normalize_render_mode(render_mode)
         profile_stage = normalize_profile_stage(profile_stage)
         merged, base = build_merged_lut_with_base_cuda(src, ref)
-        if render_mode == RENDER_PROBE_EXPORT:
+        if render_mode == RENDER_PROBE_EXPORT and _cuda_gpu_apply_enabled():
             out = apply_probe_export_gpu_v1(
                 src,
                 merged,
@@ -148,10 +156,10 @@ class MagicMatchCUDA:
 
 
 class MagicMatchPreviewCUDA(MagicMatchPreview):
-    """GPU probe_export apply for LUTs built with MagicMatch Build CUDA."""
+    """CPU parity apply by default; same LUT as Build CUDA."""
 
     CATEGORY = "MAGICMATCH/CUDA (experimental)"
-    DESCRIPTION = "GPU develop + LUT apply (1ccd29d-style). Use with Build CUDA."
+    DESCRIPTION = "Full-res CPU parity apply for LUTs from Build CUDA."
 
     def preview(
         self,
@@ -169,7 +177,7 @@ class MagicMatchPreviewCUDA(MagicMatchPreview):
         lut_encoding = _normalize_lut_encoding(lut_encoding)
         render_mode = _normalize_render_mode(render_mode)
         profile_stage = normalize_profile_stage(profile_stage)
-        if render_mode == RENDER_PROBE_EXPORT:
+        if render_mode == RENDER_PROBE_EXPORT and _cuda_gpu_apply_enabled():
             out = apply_probe_export_gpu_v1(
                 src,
                 lut.merged_lut,
