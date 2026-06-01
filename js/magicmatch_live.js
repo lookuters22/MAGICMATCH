@@ -75,6 +75,8 @@ class LivePreviewPanel {
     this.uLut = null;
     this.displayW = 200;
     this.displayH = 200;
+    this.imgW = 0;
+    this.imgH = 0;
     this.aspect = 1;
     this._glBw = 0;
     this._glBh = 0;
@@ -82,7 +84,7 @@ class LivePreviewPanel {
 
     this.wrap = document.createElement("div");
     this.wrap.style.cssText =
-      "width:100%;margin-top:6px;overflow:hidden;box-sizing:border-box;";
+      "width:100%;margin-top:6px;overflow:visible;box-sizing:border-box;";
 
     this.hint = document.createElement("div");
     this.hint.textContent = "Run workflow once → live slider preview";
@@ -183,23 +185,25 @@ class LivePreviewPanel {
     return true;
   }
 
-  /** CSS display size — uses node width and height so portrait fills tall nodes. */
+  /** CSS display size from decoded image aspect (width / height). */
   layoutPreview(nodeWidth, nodeHeight) {
+    const aspect = this.imgW > 0 && this.imgH > 0 ? this.imgW / this.imgH : this.aspect;
+    if (!aspect || aspect <= 0) return [nodeWidth, 200];
+
     const pad = 16;
     const availW = Math.max(MIN_PREVIEW_PX, Math.floor(nodeWidth - pad));
-    const availH = nodeHeight
-      ? Math.max(MIN_PREVIEW_PX, Math.floor(nodeHeight - NODE_CHROME_H))
-      : null;
-
     let w = availW;
-    let h = Math.max(MIN_PREVIEW_PX, Math.round(w / this.aspect));
+    let h = Math.max(MIN_PREVIEW_PX, Math.round(w / aspect));
 
-    if (availH && h < availH) {
-      h = availH;
-      w = Math.max(MIN_PREVIEW_PX, Math.round(h * this.aspect));
-      if (w > availW) {
-        w = availW;
-        h = Math.max(MIN_PREVIEW_PX, Math.round(w / this.aspect));
+    if (nodeHeight) {
+      const availH = Math.max(MIN_PREVIEW_PX, Math.floor(nodeHeight - NODE_CHROME_H));
+      if (availH > h) {
+        h = availH;
+        w = Math.max(MIN_PREVIEW_PX, Math.round(h * aspect));
+        if (w > availW) {
+          w = availW;
+          h = Math.max(MIN_PREVIEW_PX, Math.round(w / aspect));
+        }
       }
     }
 
@@ -211,11 +215,18 @@ class LivePreviewPanel {
   }
 
   /** Backing store = cache pixels × DPR (only changes when cache size changes). */
+  sourceDimensions() {
+    const w = this.imgW > 0 ? this.imgW : this.cache?.w ?? 1;
+    const h = this.imgH > 0 ? this.imgH : this.cache?.h ?? 1;
+    return { w, h };
+  }
+
   syncGlBacking() {
     if (!this.cache) return false;
+    const { w: srcW, h: srcH } = this.sourceDimensions();
     const dpr = window.devicePixelRatio || 1;
-    const bw = Math.max(1, Math.round(this.cache.w * dpr));
-    const bh = Math.max(1, Math.round(this.cache.h * dpr));
+    const bw = Math.max(1, Math.round(srcW * dpr));
+    const bh = Math.max(1, Math.round(srcH * dpr));
     if (bw === this._glBw && bh === this._glBh && this.gl) return false;
     this._glBw = bw;
     this._glBh = bh;
@@ -266,8 +277,7 @@ class LivePreviewPanel {
 
   uploadSource(gl) {
     if (!this._img || !this.cache) return;
-    const srcW = this.cache.w;
-    const srcH = this.cache.h;
+    const { w: srcW, h: srcH } = this.sourceDimensions();
     this._srcCanvas.width = srcW;
     this._srcCanvas.height = srcH;
     const ctx = this._srcCanvas.getContext("2d");
@@ -402,7 +412,11 @@ app.registerExtension({
     panel.wrap.appendChild(panel.canvas);
 
     domWidget.computeSize = function (width) {
-      if (panel.cache) {
+      if (panel.imgW > 0 && panel.imgH > 0) {
+        return panel.layoutPreview(width, panel.node.size?.[1]);
+      }
+      if (panel.cache?.w && panel.cache?.h) {
+        panel.aspect = panel.cache.w / panel.cache.h;
         return panel.layoutPreview(width, panel.node.size?.[1]);
       }
       return [width, 200];
@@ -411,7 +425,7 @@ app.registerExtension({
     const origOnResize = node.onResize;
     node.onResize = function (size) {
       const res = origOnResize?.apply(this, arguments);
-      if (panel.cache) {
+      if (panel.imgW > 0) {
         panel.layoutPreview(size[0], size[1]);
         panel.drawPreview(panel.getStrength());
       }
