@@ -177,6 +177,52 @@ def _apply_curve(rgb: torch.Tensor, curve: torch.Tensor) -> torch.Tensor:
     return out
 
 
+def _sample_bilinear_table(
+    data: torch.Tensor, width: int, height: int, u: torch.Tensor, v: torch.Tensor
+) -> torch.Tensor:
+    x = torch.clamp(u, 0.0, 1.0) * (width - 1)
+    y = torch.clamp(v, 0.0, 1.0) * (height - 1)
+    x0 = torch.floor(x).to(torch.int64)
+    y0 = torch.floor(y).to(torch.int64)
+    x1 = torch.minimum(x0 + 1, torch.tensor(width - 1, device=data.device))
+    y1 = torch.minimum(y0 + 1, torch.tensor(height - 1, device=data.device))
+    fx = (x - x0.float()).unsqueeze(-1)
+    fy = (y - y0.float()).unsqueeze(-1)
+    flat = data.reshape(height, width, 3)
+    c00, c01 = flat[y0, x0], flat[y0, x1]
+    c10, c11 = flat[y1, x0], flat[y1, x1]
+    c0 = c00 * (1.0 - fx) + c01 * fx
+    c1 = c10 * (1.0 - fx) + c11 * fx
+    return c0 * (1.0 - fy) + c1 * fy
+
+
+def _apply_hsv_look_table(
+    rgb: torch.Tensor, dims: tuple[int, int, int], table: torch.Tensor
+) -> torch.Tensor:
+    hue_divs, sat_divs, val_divs = dims
+    inv_sat = 1.0 / sat_divs
+    inv_val = 1.0 / val_divs
+    hsv = _rgb_to_hsv(rgb)
+    h, s, v = hsv[..., 0], hsv[..., 1], hsv[..., 2]
+    x = (s * (sat_divs - 1.0) + 0.5) * inv_sat
+    y = (h * hue_divs + 0.5) / hue_divs
+    z = v * (val_divs - 1.0)
+    z_floor = torch.floor(z)
+    zf = (z_floor + y) * inv_val
+    zc = (torch.ceil(z) + y) * inv_val
+    width = sat_divs
+    height = hue_divs * val_divs
+    tex = table.reshape(height, width, 3)
+    col1 = _sample_bilinear_table(tex, width, height, x, zf)
+    col2 = _sample_bilinear_table(tex, width, height, x, zc)
+    fract_z = (z - z_floor).unsqueeze(-1)
+    factors = col1 * (1.0 - fract_z) + col2 * fract_z
+    hsv[..., 0] = (h + factors[..., 0]) % 1.0
+    hsv[..., 1] = s * factors[..., 1]
+    hsv[..., 2] = v * factors[..., 2]
+    return _hsv_to_rgb(hsv)
+
+
 @torch.inference_mode()
 def render_srgb_develop_torch(
     srgb_hwc: torch.Tensor,
@@ -185,6 +231,7 @@ def render_srgb_develop_torch(
     merged_lut=None,
     lut_strength: float = 1.0,
     lut_encoding: str = "srgb_srgb",
+    force_color_look: bool = False,
     input_tone_map_inversed: bool = False,
     as_shot_temp: float = DEFAULT_AS_SHOT_TEMP,
     as_shot_tint: float = DEFAULT_AS_SHOT_TINT,
@@ -233,6 +280,13 @@ def render_srgb_develop_torch(
     rgb = _set_hue(rgb, hue)
     if saturation != 0.0:
         rgb = _apply_saturation(rgb, saturation)
+
+    if force_color_look:
+        from ..probe_parity.adobe_assets import load_adobe_profile_look_table, profile_look_dims
+
+        dims = profile_look_dims()
+        table = torch.from_numpy(load_adobe_profile_look_table()).to(device=device)
+        rgb = _apply_hsv_look_table(rgb, dims, table)
 
     hue = _rgb_to_hue(rgb)
     rgb = _tonemap(rgb)
