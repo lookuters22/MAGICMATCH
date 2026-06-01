@@ -97,6 +97,13 @@ def _xy_to_xyz(x: float, y: float) -> np.ndarray:
     return np.array([x / y, 1.0, (1.0 - x - y) / y], dtype=np.float64)
 
 
+def xyz_to_xy(xyz: np.ndarray) -> tuple[float, float]:
+    """Port of XYZtoXY from color-conversion.ts."""
+    x, y, z = np.asarray(xyz, dtype=np.float64).reshape(3)
+    s = x + y + z
+    return float(x / s), float(y / s)
+
+
 def xy_to_white_balance(x: float, y: float) -> tuple[float, float]:
     """Port of XYtoWhiteBalance from temperature.ts."""
     u = (2.0 * x) / (1.5 - x + 6.0 * y)

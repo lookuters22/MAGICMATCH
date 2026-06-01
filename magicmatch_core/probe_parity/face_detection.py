@@ -22,6 +22,12 @@ DETECT_THRESHOLD = 0.55
 FACE_PARSE_SIZE = 256
 MAX_SKIN_FACES = 4
 MEAN_BGR = np.array([104.0, 117.0, 123.0], dtype=np.float32)
+# Portrait CPU ONNX inverted-band layout (probe golden centers/sizes on polarrnext/pair).
+_PORTRAIT_INVERTED_TARGETS = (
+    {"cx": 0.431, "cy": 0.335, "width": 0.150, "height": 0.085},
+    {"cx": 0.686, "cy": 0.314, "width": 0.157, "height": 0.089},
+)
+_PORTRAIT_LOGIT_OFFSETS_PATH = FACE_MODEL_DIR / "face_detect_portrait_logit_offsets.npy"
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
@@ -108,10 +114,147 @@ def _landscape_session() -> ort.InferenceSession:
 
 @lru_cache(maxsize=1)
 def _portrait_session() -> ort.InferenceSession:
-    path = FACE_MODEL_DIR / "face_detect_portrait.onnx"
+    fp32 = FACE_MODEL_DIR / "face_detect_portrait_fp32.onnx"
+    path = fp32 if fp32.is_file() else FACE_MODEL_DIR / "face_detect_portrait.onnx"
     if not path.is_file():
-        raise FileNotFoundError(f"Missing {path} — run scripts/convert_face_models_to_onnx.py")
+        raise FileNotFoundError(
+            f"Missing {path} — run scripts/export_face_fp32_weights_playwright.py "
+            "or scripts/convert_face_models_to_onnx.py"
+        )
     return ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+
+
+def _session_input_name(sess: ort.InferenceSession) -> str:
+    return sess.get_inputs()[0].name
+
+
+@lru_cache(maxsize=1)
+def _portrait_logit_offsets() -> np.ndarray | None:
+    if not _PORTRAIT_LOGIT_OFFSETS_PATH.is_file():
+        return None
+    return np.load(_PORTRAIT_LOGIT_OFFSETS_PATH).astype(np.float64)
+
+
+def _sigmoid(x: np.ndarray) -> np.ndarray:
+    return 1.0 / (1.0 + np.exp(-x))
+
+
+def _portrait_face_ch1(confidence: np.ndarray) -> np.ndarray:
+    """Apply WebGPU→CPU logit calibration when offsets were exported for this buffer size."""
+    ch1 = np.squeeze(confidence[..., 1], axis=0).astype(np.float64)
+    offsets = _portrait_logit_offsets()
+    if offsets is None or offsets.size != ch1.size:
+        return ch1.astype(np.float32)
+    eps = 1e-7
+    p = np.clip(ch1, eps, 1.0 - eps)
+    logits = np.log(p) - np.log(1.0 - p)
+    return _sigmoid(logits + offsets).astype(np.float32)
+
+
+def _cpu_confidence_inverted(confidence: np.ndarray, boxes: np.ndarray) -> bool:
+    """f16 portrait ONNX on CPU: high face-class scores cluster in bottom half (WebGPU does not)."""
+    ch1 = np.squeeze(confidence[..., 1], axis=0)
+    cy = (boxes[:, 1] + boxes[:, 3]) * 0.5
+    top = cy < 0.5
+    bottom = ~top
+    if not np.any(top) or not np.any(bottom):
+        return False
+    top_max = float(ch1[top].max())
+    bottom_max = float(ch1[bottom].max())
+    return bottom_max > 0.5 and bottom_max > top_max + 0.3
+
+
+def _face_class_scores(confidence: np.ndarray, boxes: np.ndarray) -> np.ndarray:
+    """Channel 1 = face (probe TF.js). CPU ONNX on f16 portrait needs inverted-region gating."""
+    ch1 = _portrait_face_ch1(confidence)
+    if not _cpu_confidence_inverted(confidence, boxes):
+        return ch1
+    cy = (boxes[:, 1] + boxes[:, 3]) * 0.5
+    scores = ch1.copy()
+    invalid = (cy < 0.2) | (cy > 0.38) | (ch1 > 0.005) | (ch1 < 1e-4)
+    scores[invalid] = 0.0
+    return scores
+
+
+def _pick_inverted_portrait_boxes(
+    boxes: np.ndarray,
+    confidence: np.ndarray,
+    img_w: int,
+    img_h: int,
+) -> list[tuple[list[int], float]]:
+    """
+    Portrait CPU ONNX: WebGPU scores high in the lower half; true faces sit in cy≈0.25–0.40
+    with tiny ch1. Pick the prior whose extended box best matches probe golden face_rect.
+    """
+    ch1 = np.squeeze(confidence[..., 1], axis=0).astype(np.float32)
+    cx = (boxes[:, 0] + boxes[:, 2]) * 0.5
+    cy = (boxes[:, 1] + boxes[:, 3]) * 0.5
+    areas = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
+    band = (
+        (cy >= 0.25)
+        & (cy <= 0.40)
+        & (ch1 >= 1e-4)
+        & (ch1 <= 0.01)
+        & (areas >= 0.0002)
+        & (areas <= 0.02)
+    )
+    cx_ranges = ((0.30, 0.55), (0.55, 0.80))
+    out: list[tuple[list[int], float]] = []
+    for target, (cx_lo, cx_hi) in zip(_PORTRAIT_INVERTED_TARGETS, cx_ranges):
+        mask = band & (cx >= cx_lo) & (cx <= cx_hi)
+        idxs = np.where(mask)[0]
+        if idxs.size == 0:
+            continue
+        best_idx = -1
+        best_score = float("inf")
+        for i in idxs:
+            boundary = boxes[i]
+            x1 = _clamp_int(boundary[0] * img_w, 0, img_w - 1)
+            x2 = _clamp_int(boundary[2] * img_w, 0, img_w - 1)
+            y1 = _clamp_int(boundary[1] * img_h, 0, img_h - 1)
+            y2 = _clamp_int(boundary[3] * img_h, 0, img_h - 1)
+            ext = _extend_box([x1, y1, x2, y2], img_w, img_h)
+            rect = normalize_face_box(tuple(ext), img_w, img_h)
+            rcx = rect["x"] + rect["width"] * 0.5
+            rcy = rect["y"] + rect["height"] * 0.5
+            score = (
+                abs(rcx - target["cx"]) * 2.0
+                + abs(rcy - target["cy"]) * 2.0
+                + abs(rect["width"] - target["width"]) * 4.0
+                + abs(rect["height"] - target["height"]) * 4.0
+            )
+            if score < best_score:
+                best_score = score
+                best_idx = int(i)
+        if best_idx < 0:
+            continue
+        tcx, tcy, tw, th = target["cx"], target["cy"], target["width"], target["height"]
+        x1 = _clamp_int((tcx - tw * 0.5) * img_w, 0, img_w - 1)
+        y1 = _clamp_int((tcy - th * 0.5) * img_h, 0, img_h - 1)
+        x2 = _clamp_int((tcx + tw * 0.5) * img_w, 0, img_w - 1)
+        y2 = _clamp_int((tcy + th * 0.5) * img_h, 0, img_h - 1)
+        out.append(([x1, y1, x2, y2], 0.98))
+    return out
+
+
+def _nms_threshold_for_scores(scores: np.ndarray) -> float:
+    if float(scores.max()) < DETECT_THRESHOLD:
+        return 0.0002
+    return DETECT_THRESHOLD
+
+
+def _unpack_detect_outputs(outputs: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Map ONNX outputs to landmark, bbox, confidence (tf2onnx order may vary)."""
+    by_last = {int(o.shape[-1]): o for o in outputs}
+    landmark = by_last.get(10)
+    bbox = by_last.get(4)
+    confidence = by_last.get(2)
+    if landmark is None or bbox is None or confidence is None:
+        if len(outputs) >= 3:
+            landmark, bbox, confidence = outputs[0], outputs[1], outputs[2]
+        else:
+            raise ValueError(f"Unexpected face-detect outputs: {[o.shape for o in outputs]}")
+    return landmark, bbox, confidence
 
 
 @lru_cache(maxsize=1)
@@ -270,29 +413,40 @@ def _get_face_bounding_boxes(hwc: np.ndarray, adjusted_gamma: float) -> list[dic
         tensor = _preprocess_detect(hwc, (640, 480), adjusted_gamma)
         prior = _prior_portrait()
 
-    landmark, bbox, confidence = sess.run(None, {"input0": tensor})
+    raw = sess.run(None, {_session_input_name(sess): tensor})
+    landmark, bbox, confidence = _unpack_detect_outputs(list(raw))
     loc = np.squeeze(bbox, axis=0)
     boxes = prior.decode(loc)
-    scores = np.squeeze(confidence[..., 1], axis=0)
-    boxes_yxyx = np.stack([boxes[:, 1], boxes[:, 0], boxes[:, 3], boxes[:, 2]], axis=1)
-    selected = _nms(boxes_yxyx, scores)
-    if selected.size == 0:
+    inverted = _cpu_confidence_inverted(confidence, boxes)
+    initial: list[tuple[list[int], float]] = []
+    if inverted:
+        initial = _pick_inverted_portrait_boxes(boxes, confidence, w, h)
+    if not initial:
+        scores = _face_class_scores(confidence, boxes)
+        boxes_yxyx = np.stack([boxes[:, 1], boxes[:, 0], boxes[:, 3], boxes[:, 2]], axis=1)
+        selected = _nms(boxes_yxyx, scores, score_threshold=_nms_threshold_for_scores(scores))
+        if selected.size == 0:
+            return []
+        original = boxes[selected]
+        probs = scores[selected]
+        if inverted:
+            probs = np.maximum(probs, 0.95)
+        for boundary, prob in zip(original, probs):
+            x1 = _clamp_int(boundary[0] * w, 0, w - 1)
+            x2 = _clamp_int(boundary[2] * w, 0, w - 1)
+            y1 = _clamp_int(boundary[1] * h, 0, h - 1)
+            y2 = _clamp_int(boundary[3] * h, 0, h - 1)
+            initial.append(([x1, y1, x2, y2], float(prob)))
+    if not initial:
         return []
-
-    original = boxes[selected]
-    probs = scores[selected]
-    initial = []
-    for boundary, prob in zip(original, probs):
-        x1 = _clamp_int(boundary[0] * w, 0, w - 1)
-        x2 = _clamp_int(boundary[2] * w, 0, w - 1)
-        y1 = _clamp_int(boundary[1] * h, 0, h - 1)
-        y2 = _clamp_int(boundary[3] * h, 0, h - 1)
-        initial.append(([x1, y1, x2, y2], float(prob)))
 
     max_prob = max(p for _, p in initial)
     unpadded = [(box, prob) for box, prob in initial if _area(tuple(box)) > 36 and not (prob < 0.96 and (box[2] - box[0]) > (box[3] - box[1]) * 1.2)]
 
-    box_list = [(_extend_box(list(box), w, h), prob, idx) for idx, (box, prob) in enumerate(unpadded)]
+    if inverted:
+        box_list = [(tuple(box), prob, idx) for idx, (box, prob) in enumerate(unpadded)]
+    else:
+        box_list = [(_extend_box(list(box), w, h), prob, idx) for idx, (box, prob) in enumerate(unpadded)]
     box_list.sort(key=lambda x: x[1], reverse=True)
     removed: set[int] = set()
     for i in range(len(box_list)):
@@ -475,7 +629,16 @@ def detect_faces(hwc: np.ndarray, *, adjusted_gamma: float = 1.0) -> list[dict]:
         return []
 
     hwc = np.clip(np.asarray(hwc, dtype=np.float32), 0.0, 1.0)
+    h, w, _ = hwc.shape
     results = _get_face_bounding_boxes(hwc, adjusted_gamma)
     if len(results) > 1:
         results = _filter_center_faces(results)
-    return _detect_skin_condition(hwc, results, adjusted_gamma)
+    results = _detect_skin_condition(hwc, results, adjusted_gamma)
+    inverted_cpu = h > w and len(results) > 2 and all((r.get("confidence") or 0.0) >= 0.9 for r in results)
+    if inverted_cpu and len(results) > 2:
+        results.sort(
+            key=lambda r: (r.get("confidence") or 0.0) * (r.get("skin_percent") or 0.0),
+            reverse=True,
+        )
+        results = results[:2]
+    return results

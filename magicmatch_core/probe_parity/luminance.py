@@ -39,7 +39,7 @@ def get_lightness_hwc(hwc: np.ndarray) -> np.ndarray:
 
 def compute_histogram(data: np.ndarray, num_bins: int = 256) -> np.ndarray:
     bins = np.zeros(num_bins, dtype=np.int64)
-    idx = np.clip((data * num_bins).astype(np.int32), 0, num_bins - 1)
+    idx = np.clip(np.floor(np.asarray(data, dtype=np.float64) * num_bins).astype(np.int32), 0, num_bins - 1)
     np.add.at(bins, idx, 1)
     return bins
 
@@ -165,9 +165,10 @@ def get_luminance_statistics(
     face_detection_results: list[dict],
 ) -> LuminanceStatistics:
     """Port of getLuminanceStatistics(small, large, faces)."""
-    from .calibration_utils import get_masked_pixels
+    from .calibration_utils import get_masked_pixels, hwc_to_rgba_uint8
 
-    lum = get_lightness_hwc(small_hwc).ravel()
+    # Probe passes exportImageData RGBA uint8 into getLightness (ai-calibration-brightness.ts).
+    lum = get_lightness_rgba(hwc_to_rgba_uint8(small_hwc).reshape(-1))
     histogram = compute_histogram(lum)
     avg_lum = float(np.mean(lum))
     shadows_mean = get_shadows_mean(histogram)
@@ -354,13 +355,28 @@ def get_auto_exposure(inputs: LuminanceStatistics, relax_limits: bool = False) -
                 min_v = max(face_exposure - 0.4, min(face_exposure * 5, -0.25))
             else:
                 max_v = min(face_exposure + 0.4, max(0.25, face_exposure * 5))
-        image_exposure_limited = _clamp(image_exposure, min_v, max_v)
+        small_face_thresh = 0.003
+        tiny_face_thresh = 0.001
+        if face_percent < small_face_thresh:
+            small_face_scale = (small_face_thresh - face_percent) / small_face_thresh
+            min_v -= 0.4 * small_face_scale
+            max_v += 0.4 * small_face_scale
+            max_exposure_final -= 0.4 * small_face_scale
+            if clipping_percent > 0:
+                max_exposure_final *= min(1.0, (1.0 - small_face_scale) * 0.5 + 0.5)
+            if face_percent < tiny_face_thresh:
+                tiny_scale = (face_percent / tiny_face_thresh) * 0.6 + 0.4
+                face_exposure *= tiny_scale
+                max_exposure_final *= tiny_scale
+        image_exposure_limited = min(max(image_exposure, min_v), max_v)
 
     exposure = image_exposure_limited * image_weight + face_exposure * face_weight
     if not face_exists and percentile99 < 0.97 and clipping_percent == 0 and exposure < -0.1:
         exposure = -0.1 + (exposure + 0.1) * 0.5
     if clipping_percent > 0:
         max_exposure_final *= 0.7
+    if relax_limits and max_exposure_final < face_exposure:
+        max_exposure_final = max_exposure_final * 0.2 + face_exposure * 0.8
     exposure = min(exposure, max_exposure_final)
 
     highlights = (
@@ -376,6 +392,32 @@ def get_auto_exposure(inputs: LuminanceStatistics, relax_limits: bool = False) -
     highlights_for_close = max(min(delta1 - 0.07, 0) + min(delta2 - 0.07, 0), -0.1) * 1.4
     highlights = min(highlights, highlights_for_low, highlights_for_close)
 
+    face_percentile99 = face_percentiles[-1] if face_percentiles else 0.0
+    face_percentile95 = face_percentiles[-2] if len(face_percentiles) > 1 else 0.0
+    face_percentile90 = face_percentiles[-3] if len(face_percentiles) > 2 else 0.0
+
+    if face_exists:
+        highlights = max(highlights, -0.12) * (0.2 + 2 * image_weight)
+        face_highlights = (
+            min(0.8 - face_percentile90, 0)
+            + min(0.84 - face_percentile95, 0)
+            + min(0.89 - face_percentile99, 0)
+        )
+        offset = 8
+        face_highlights_for_low = min(
+            (means[offset + 2] + stds[offset + 2]) - face_percentiles[2], 0
+        ) + min((means[offset + 3] + stds[offset + 3]) - face_percentiles[3], 0)
+        fd1 = 0.07
+        fd2 = 0.07
+        if face_percentile95 > 0.82:
+            fd1 = face_percentile99 - face_percentile95
+        if face_percentile90 > 0.78:
+            fd2 = face_percentile95 - face_percentile90
+        face_highlights_for_close = (
+            max(min(fd1 - 0.05, 0) + min(fd2 - 0.05, 0), -0.08) * 1.5
+        )
+        highlights += min(face_highlights, face_highlights_for_low, face_highlights_for_close)
+
     max_highlights = -25 if clipping_percent > 0 else -35
     highlights = max(highlights * 200, max_highlights)
     whites = highlights * 0.3
@@ -387,17 +429,45 @@ def get_auto_exposure(inputs: LuminanceStatistics, relax_limits: bool = False) -
     shadows = max(0.1 - shadows_mean, 0) * 150
     blacks = _clamp(shadows * 1.5, 0, 20)
 
-    if not face_exists and image_shadows > exposure:
+    if face_exists:
+        blacks += max(0.1 - face_percentiles[0], 0) * 200
+        d2 = max(0.2 - face_percentiles[1], 0) * 150
+        blacks = _clamp(blacks + d2, 0, 40)
+        shadows += d2
+        whites *= 0.7
+        max_diff_low_face = get_percentile_difference(
+            face_percentiles + [face_lum],
+            means[8:],
+            stds[8:],
+            0.02,
+            (4, 5, 6),
+        )
+        face_shadows = -max_diff_low_face * scale
+        face_shadows = max(face_exposure, face_shadows, image_shadows * 0.7)
+        shadows_scale = min(45 + 1000 * face_percent, 55)
+        if face_shadows > exposure:
+            percent_delta = 1.0
+            if exposure > 0.1:
+                percent_delta = (face_shadows - exposure) / exposure
+            elif face_shadows < -0.1:
+                percent_delta = -(face_shadows - exposure) / face_shadows
+            shadows += (face_shadows - exposure) * shadows_scale * min(percent_delta, 1.0)
+    elif image_shadows > exposure:
         shadows_scale = 100 if relax_limits else 50
         shadows += (image_shadows - exposure) * shadows_scale
 
     max_shadows = 80 if relax_limits else 45
-    limit = 0.95
+    if shadows > max_shadows and face_exists:
+        exposure += ((shadows - max_shadows) / 100.0)
+
+    limit = 1.0 if face_exists else 0.95
     max_exposure_abs = min(
         (limit - percentile99) * scale,
         (limit - 0.05 - percentile95) * scale,
         (limit - 0.1 - percentile90) * scale,
     )
+    if face_exists:
+        max_exposure_abs = min(max_exposure_abs, face_exposure)
     if exposure > max_exposure_abs:
         highlights_from_exp = min((exposure - max_exposure_abs) * 100, 60)
         highlights = min(
@@ -406,6 +476,11 @@ def get_auto_exposure(inputs: LuminanceStatistics, relax_limits: bool = False) -
         )
     elif exposure < 0 and highlights != 0:
         highlights -= max(exposure, -0.5) * 30
+
+    if face_exists and face_lum > 0.55:
+        scale_down = max(1.0 - (face_lum - 0.55) * 1.6, 0.4)
+        highlights = highlights * scale_down
+        whites *= scale_down
 
     min_highlights = -80 if relax_limits else -60
     if highlights < min_highlights and exposure > max_exposure:
@@ -425,8 +500,38 @@ def get_auto_exposure(inputs: LuminanceStatistics, relax_limits: bool = False) -
     highlights = max(min_highlights, min(highlights, 0))
     shadows = max(0, min(shadows, max_shadows))
 
+    if face_lum < 0.65 and exposure < 0 and clipping_percent > 0.008:
+        delta_dark_area = max(
+            0.7 - percentiles[2],
+            0.53 - percentiles[1],
+            0.36 - percentiles[0],
+            -0.25 * exposure,
+        )
+        delta_bright_area = max(
+            percentiles[3] * 0.3 + percentiles[4] * 0.7 - 0.83,
+            -0.2 * exposure,
+        )
+        delta = min(delta_dark_area, delta_bright_area * 0.7 + delta_dark_area * 0.3)
+        d_scale = 4 * _clamp((0.85 - percentiles[0] - percentiles[1]) / 0.2, 0, 1)
+        d_scale = max(d_scale, min(4.0, (0.78 - avg_lum) * 16))
+        if face_exists:
+            delta = 0.6 - face_percentiles[1]
+            d_scale = 2.5
+        delta_exp = (max(delta, 0) * d_scale * (-highlights - whites - 25)) / 70
+        delta1_lim = 0.0
+        delta2_lim = min(
+            max((0.78 - avg_lum) * 2, -exposure),
+            max(0.25, -1.2 * exposure),
+        )
+        exposure += _clamp(delta_exp, delta1_lim, delta2_lim)
+
+    min_exposure = -1.0
+    if face_percent >= 0.02 and (face_lum < 0.4 or face_percentile99 < 0.65):
+        min_exposure = max(0.4 - face_lum, 0.65 - face_percentile99) * 2
+
     min_exposure_limit = -1.5 if relax_limits else -1.0
     max_exposure_limit = 1.9 if relax_limits else 1.3
+    exposure = max(exposure, min_exposure)
     exposure = _clamp(exposure, min_exposure_limit, max_exposure_limit)
 
     saturation = get_saturation_delta(shadows, highlights, exposure, face_lum > 0)

@@ -289,16 +289,21 @@ def render_srgb_develop(
     lut_strength: float = 1.0,
     lut_encoding: str = "srgb_srgb",
     force_color_look: bool = False,
+    input_tone_map_inversed: bool = False,
     as_shot_temp: float = DEFAULT_AS_SHOT_TEMP,
     as_shot_tint: float = DEFAULT_AS_SHOT_TINT,
 ) -> np.ndarray:
     """Full-res develop + optional user RGB LUT → sRGB (probe export path)."""
     shape = srgb_hwc.shape
-    rgb = srgb_to_prophoto(srgb_hwc).reshape(-1, 3)
-    hue0 = _rgb_to_hue(rgb)
-    rgb = _tonemap_inv(rgb)
-    rgb = _set_hue(rgb, hue0)
-    rgb = np.maximum(rgb, 0.0)
+    if input_tone_map_inversed:
+        # Bitmap internal texture after bitmap.frag (ColorSpaceCpu.toneMapInversed).
+        rgb = np.clip(np.asarray(srgb_hwc, dtype=np.float32), 0.0, 1.0).reshape(-1, 3)
+    else:
+        rgb = srgb_to_prophoto(srgb_hwc).reshape(-1, 3)
+        hue0 = _rgb_to_hue(rgb)
+        rgb = _tonemap_inv(rgb)
+        rgb = _set_hue(rgb, hue0)
+        rgb = np.maximum(rgb, 0.0)
 
     gamma = _linear_to_gamma(rgb)
     luma_map = _get_luma(gamma)
@@ -329,9 +334,7 @@ def render_srgb_develop(
     if saturation != 0.0:
         rgb = _apply_saturation(rgb, saturation)
 
-    # Bitmap/JPEG Standard (Comfy tensors): no DCP profile look, no Adobe color look.
-    # Probe polarrFullRawRenderer uses COLOR_PROFILE_STANDARD with null profile tables.
-    # force_color_look ≈ renderColorLookTableWithUserLut (Adobe color table, optional with LUT).
+    # Bitmap/JPEG Standard (Comfy PNG/JPG tensors): no Adobe profile/color look tables.
     if force_color_look:
         dims = profile_look_dims()
         table = load_adobe_profile_look_table()
@@ -341,13 +344,13 @@ def render_srgb_develop(
     rgb = _tonemap(rgb)
     rgb = _set_hue(rgb, hue)
     rgb = _linear_to_gamma(rgb)
-    hue = _rgb_to_hue(_gamma_to_linear(rgb))
+    hue = _rgb_to_hue(rgb)
     if whites > 0.0 or blacks < 0.0:
         rgb = _expand_whites_blacks(rgb, whites, blacks)
     if contrast != 0.0:
         rgb = _apply_curve(rgb, _get_contrast_curve(contrast, 256))
-    rgb = _gamma_to_linear(rgb)
     rgb = _set_hue(rgb, hue)
+    rgb = _gamma_to_linear(rgb)
 
     if merged_lut is not None and lut_strength > 0.0:
         gamma_id, primaries_id = ENCODING_PRESETS.get(lut_encoding, ENCODING_PRESETS["srgb_srgb"])

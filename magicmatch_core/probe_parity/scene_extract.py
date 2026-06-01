@@ -7,7 +7,9 @@ Mirrors extractSceneInfo / extractImageInfoFromRefJpeg bitmap path:
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 
@@ -15,8 +17,14 @@ from .calibration_utils import get_masked_pixels
 from .calibration_wb import get_auto_wb_params_for_color_match, get_robust_skin_illuminant
 from .color_match_features import extract_color_match_features
 from .face_detection import detect_faces
-from .luminance import get_adjusted_gamma, get_auto_light_params, get_luminance_statistics
-from .reference import fit_to_size, fit_long_edge, resize_hwc
+from .luminance import (
+    get_adjusted_gamma,
+    get_auto_light_params,
+    get_face_area_luminance_statistics,
+    get_luminance_statistics,
+    LuminanceStatistics,
+)
+from .reference import prepare_worker_bitmap_source, render_detection_export
 from .wb import DEFAULT_AS_SHOT_TEMP, DEFAULT_AS_SHOT_TINT
 
 BITMAP_AS_SHOT_TEMP = DEFAULT_AS_SHOT_TEMP
@@ -34,12 +42,18 @@ class SceneInfo:
     avg_face_hsvl: np.ndarray | None
 
 
-def render_detection_inputs(hwc: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Bitmap path: fit small/large like probe renderDetectionInputs / ref JPEG."""
-    hwc = np.clip(np.asarray(hwc, dtype=np.float32), 0.0, 1.0)
-    large = fit_long_edge(hwc, DETECTION_LARGE_EDGE)
-    sw, sh = fit_to_size(hwc.shape[1], hwc.shape[0], (DETECTION_SMALL_EDGE, DETECTION_SMALL_EDGE))
-    small = resize_hwc(hwc, sw, sh, high_quality=True)
+def render_detection_inputs(hwc: np.ndarray, *, worker_feed_prepared: bool = False) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Probe ai.worker renderDetectionInputs({}) on bitmap sources.
+
+    JPEG q98 worker feed → bitmap.frag half-res → mipmap-linear transform export (300 / 2000 fit).
+    """
+    from .reference import bitmap_shader_import
+
+    feed = hwc if worker_feed_prepared else prepare_worker_bitmap_source(hwc)
+    half = bitmap_shader_import(feed, scale=2)
+    small = render_detection_export(feed, DETECTION_SMALL_EDGE, half_res_hwc=half)
+    large = render_detection_export(feed, DETECTION_LARGE_EDGE, half_res_hwc=half)
     return small, large
 
 
@@ -53,9 +67,21 @@ def extract_scene_info_bitmap(
     *,
     as_shot_temperature: float = BITMAP_AS_SHOT_TEMP,
     as_shot_tint: float = BITMAP_AS_SHOT_TINT,
+    source_path: Path | str | None = None,
+    use_probe_browser: bool | None = None,
+    worker_feed_prepared: bool = False,
 ) -> SceneInfo:
     """Full bitmap scene extract for color-match base adjustments."""
-    small, large = render_detection_inputs(source_hwc)
+    if use_probe_browser is None:
+        use_probe_browser = os.environ.get("MAGICMATCH_PROBE_BROWSER", "0") == "1"
+    if use_probe_browser:
+        from .probe_browser_scene import extract_scene_via_probe_browser
+
+        path = Path(source_path) if source_path is not None else None
+        browser_scene = extract_scene_via_probe_browser(path or source_hwc)
+        return browser_scene
+
+    small, large = render_detection_inputs(source_hwc, worker_feed_prepared=worker_feed_prepared)
     stats_noface = get_luminance_statistics(small, large, [])
     adjusted_gamma = get_adjusted_gamma(stats_noface)
 
@@ -76,9 +102,22 @@ def extract_scene_info_bitmap(
     if filtered_faces and face_percent_and_pixels is None:
         face_percent_and_pixels = get_masked_pixels(large, filtered_faces, True)
 
-    face_area = get_luminance_statistics(small, large, filtered_faces)
+    face_area = get_face_area_luminance_statistics(
+        large,
+        filtered_faces,
+        face_percent_and_pixels,
+    )
+    luminance_stats = LuminanceStatistics(
+        avg_lum=stats_noface.avg_lum,
+        shadows_mean=stats_noface.shadows_mean,
+        clipping_percent=stats_noface.clipping_percent,
+        percentiles=stats_noface.percentiles,
+        face_percentiles=face_area["facePercentiles"],
+        face_percent=float(face_area["facePercent"]),
+        face_lum=float(face_area["faceLum"]),
+    )
     avg_face = color_features.get("avgFaceHsvl")
-    auto_light = get_auto_light_params(face_area, avg_face)
+    auto_light = get_auto_light_params(luminance_stats, avg_face)
 
     illuminant = get_robust_skin_illuminant(
         small,

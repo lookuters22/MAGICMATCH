@@ -41,4 +41,6 @@ def apply_merged_lut_output(
         merged_lut,
         strength,
         encoding=lut_encoding,
+        base_adjustments=base_adjustments,
+        profile_stage=profile_stage,
     )

@@ -9,19 +9,18 @@ from ..lut import get_merged_lut, nn_outputs_to_flat
 from .base_adjustments import estimate_base_adjustments
 from .develop import render_srgb_develop
 from .profile_stage import ProfileStageFlags, normalize_profile_stage, profile_stage_flags
-from .reference import NET_INPUT_SIZE, NET_LONG_EDGE, fit_long_edge, prepare_net_reference, resize_hwc
+from .reference import NET_LONG_EDGE, fit_long_edge, prepare_net_reference, prepare_worker_bitmap_source
 from .wb import DEFAULT_AS_SHOT_TEMP, DEFAULT_AS_SHOT_TINT
 
 
 def _render_for_net(source_hwc: np.ndarray, adjustments: dict) -> np.ndarray:
-    """1600-edge develop render → 256 ONNX input (inputWithPreset, bitmap Standard)."""
+    """1600-edge develop render (inputWithPreset before neural createTensor resize)."""
     long = fit_long_edge(source_hwc, NET_LONG_EDGE)
-    rendered = render_srgb_develop(
+    return render_srgb_develop(
         long,
         adjustments,
         force_color_look=False,
     )
-    return resize_hwc(rendered, NET_INPUT_SIZE, NET_INPUT_SIZE, high_quality=True)
 
 
 def build_merged_lut_probe_style(
@@ -30,11 +29,13 @@ def build_merged_lut_probe_style(
 ) -> tuple[np.ndarray, dict]:
     """
     Probe-style ONNX build:
+    - normalize bitmap source like probe worker load (PNG → JPEG q98)
     - estimate baseAdjustments from source luminance
     - net source = develop(source@1600, baseAdjustments) → 256
-    - net ref = reference@1600 → 256
+    - net ref = reference → 256 (WebP round-trip)
     """
-    base = estimate_base_adjustments(source_hwc)
+    source_hwc = prepare_worker_bitmap_source(source_hwc)
+    base = estimate_base_adjustments(source_hwc, worker_feed_prepared=True)
     net_source = _render_for_net(source_hwc, base)
     net_ref = prepare_net_reference(reference_hwc)
     lut3d, lut1d = run_inference_from_images(net_source, net_ref)
@@ -56,6 +57,7 @@ def apply_probe_export(
     if strength <= 0.0:
         return np.asarray(source_hwc, dtype=np.float32).copy()
 
+    source_hwc = prepare_worker_bitmap_source(source_hwc)
     base = base_adjustments or estimate_base_adjustments(source_hwc)
     stage_name = normalize_profile_stage(profile_stage)
     stage: ProfileStageFlags = profile_stage_flags(stage_name)

@@ -97,16 +97,28 @@ def apply_polarr_color_match_probe_style(
     strength: float = 1.0,
     *,
     encoding: str = "srgb_srgb",
+    base_adjustments: dict | None = None,
+    profile_stage: str = "current_profile_stages",
 ) -> np.ndarray:
     """
-    Comfy IMAGE (sRGB 0–1) → ProPhoto → Polarr RGB LUT → sRGB.
-
-    Matches Polarr Next Probe LUT branch for bitmap/JPEG when develop stack
-    is dominated by the user LUT (no extra sliders).
+    Comfy IMAGE (sRGB 0–1) → develop + Polarr RGB LUT → sRGB when base_adjustments
+    are provided (probe color-match export). Without base_adjustments, applies LUT
+    on ProPhoto-linear sRGB only (legacy slice).
     """
     strength = float(np.clip(strength, 0.0, 1.0))
     if strength <= 0.0:
         return np.asarray(srgb_hwc, dtype=np.float32).copy()
+    if base_adjustments is not None:
+        from .probe_parity.pipeline import apply_probe_export
+
+        return apply_probe_export(
+            srgb_hwc,
+            merged_lut_rgb,
+            strength,
+            base_adjustments=base_adjustments,
+            profile_stage=profile_stage,
+            lut_encoding=encoding,
+        )
     if strength >= 1.0 - 1e-6:
         pro = srgb_to_prophoto(srgb_hwc)
         gamma, primaries = ENCODING_PRESETS.get(encoding, ENCODING_PRESETS["srgb_srgb"])

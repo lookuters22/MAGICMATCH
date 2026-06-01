@@ -25,6 +25,33 @@ OUTPUT_LUT1D = "1D_LUT"
 _SESSION: ort.InferenceSession | None = None
 
 
+def _bilinear_resize_hwc(image_hwc: np.ndarray, out_h: int, out_w: int) -> np.ndarray:
+    """Bilinear resize (align_corners=False) matching tf.image.resizeBilinear."""
+    in_h, in_w, _ = image_hwc.shape
+    if in_h == out_h and in_w == out_w:
+        return image_hwc
+    ys = (np.arange(out_h, dtype=np.float32) + 0.5) / out_h * in_h - 0.5
+    xs = (np.arange(out_w, dtype=np.float32) + 0.5) / out_w * in_w - 0.5
+    y0 = np.floor(ys).astype(np.int32)
+    x0 = np.floor(xs).astype(np.int32)
+    y1 = np.clip(y0 + 1, 0, in_h - 1)
+    x1 = np.clip(x0 + 1, 0, in_w - 1)
+    y0 = np.clip(y0, 0, in_h - 1)
+    x0 = np.clip(x0, 0, in_w - 1)
+    fy = (ys - y0).astype(np.float32)
+    fx = (xs - x0).astype(np.float32)
+    out = np.empty((out_h, out_w, 3), dtype=np.float32)
+    for c in range(3):
+        c00 = image_hwc[y0[:, None], x0[None, :], c]
+        c01 = image_hwc[y0[:, None], x1[None, :], c]
+        c10 = image_hwc[y1[:, None], x0[None, :], c]
+        c11 = image_hwc[y1[:, None], x1[None, :], c]
+        top = c00 * (1.0 - fx)[None, :] + c01 * fx[None, :]
+        bot = c10 * (1.0 - fx)[None, :] + c11 * fx[None, :]
+        out[..., c] = top * (1.0 - fy)[:, None] + bot * fy[:, None]
+    return np.clip(out, 0.0, 1.0)
+
+
 def _resize_hwc_to_nhwc(image_hwc: np.ndarray, size: int = IMAGE_SIZE) -> np.ndarray:
     """
     H×W×3 float [0,1] → [1, size, size, 3].
@@ -39,8 +66,8 @@ def _resize_hwc_to_nhwc(image_hwc: np.ndarray, size: int = IMAGE_SIZE) -> np.nda
     pil = Image.fromarray(arr, "RGB")
     if pil.size != (size, size):
         pil = pil.resize((size, size), Image.Resampling.LANCZOS)
-    pil = pil.resize((size, size), Image.Resampling.BILINEAR)
-    out = np.asarray(pil, dtype=np.float32) / 255.0
+        image_hwc = np.asarray(pil, dtype=np.float32) / 255.0
+    out = _bilinear_resize_hwc(image_hwc, size, size)
     return np.clip(out[np.newaxis, ...], 0.0, 1.0)
 
 

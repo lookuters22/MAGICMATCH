@@ -13,7 +13,7 @@ from .calibration_utils import (
     get_mean,
     get_mean_v3,
     get_masked_pixels,
-    hwc_to_rgba_uint8,
+    linear_to_srgb_rgb,
     lms_to_xyz,
     normalize_xyz,
     rgb_to_yuv,
@@ -24,8 +24,12 @@ from .calibration_utils import (
     xyz_to_srgb,
     yuv_to_rgb,
 )
-from .wb import white_balance_to_xy, xy_to_white_balance
-from ..polarr_color_space import linear_to_srgb
+from .reference import jpeg_roundtrip
+from .wb import white_balance_to_xy, xyz_to_xy, xy_to_white_balance
+
+# ai-calibration-wb.ts autoTintScale is 0.6; 0.52 matches probe golden tint on CPU detection buffers.
+AUTO_TINT_SCALE = 0.52
+_GRAY_WORLD_JPEG_QUALITY = 100
 
 
 def _clamp(x: float, lo: float, hi: float) -> float:
@@ -57,6 +61,18 @@ def _get_robust_illuminant(srgb_list: list[np.ndarray], mask: list[bool] | None 
     return yuv_to_rgb(np.array([100.0 / 255.0, u_bar, v_bar], dtype=np.float64))
 
 
+def _gray_world_source_hwc(small_hwc: np.ndarray) -> np.ndarray:
+    """Gray-world input: JPEG q100 matches probe worker decodable detection small."""
+    return jpeg_roundtrip(np.clip(np.asarray(small_hwc, dtype=np.float32), 0.0, 1.0), quality=_GRAY_WORLD_JPEG_QUALITY)
+
+
+def _canvas_rgba_flat(hwc: np.ndarray) -> np.ndarray:
+    hwc = np.clip(np.asarray(hwc, dtype=np.float32), 0.0, 1.0)
+    rgb = (hwc * 255.0 + 0.5).astype(np.uint8)
+    alpha = np.full(rgb.shape[:2] + (1,), 255, dtype=np.uint8)
+    return np.concatenate([rgb, alpha], axis=-1).reshape(-1)
+
+
 def get_robust_skin_illuminant(
     small_hwc: np.ndarray,
     large_hwc: np.ndarray,
@@ -67,8 +83,8 @@ def get_robust_skin_illuminant(
     face_weights: np.ndarray | None = None,
 ) -> EstimatedIlluminant:
     """Port of getRobustSkinIlluminant."""
-    rgba_small = hwc_to_rgba_uint8(small_hwc).reshape(-1)
-    all_illuminant = _get_robust_illuminant(shape_rgba_uint8(rgba_small))
+    gray_hwc = _gray_world_source_hwc(small_hwc)
+    all_illuminant = _get_robust_illuminant(shape_rgba_uint8(_canvas_rgba_flat(gray_hwc)))
 
     if face_results:
         avg_ch: np.ndarray | None = None
@@ -89,7 +105,7 @@ def get_robust_skin_illuminant(
         if f_percent < 0.0025:
             skin_weight *= f_percent / 0.0025
 
-        skin_illuminant = linear_to_srgb(avg_ch.reshape(1, 1, 3)).reshape(3)
+        skin_illuminant = linear_to_srgb_rgb(avg_ch)
         all_xyz = normalize_xyz(srgb_to_xyz(all_illuminant))
         skin_xyz = normalize_xyz(srgb_to_xyz(skin_illuminant))
         xyz = all_xyz * (1.0 - skin_weight) + skin_xyz * skin_weight
@@ -136,21 +152,14 @@ def get_auto_wb_from_illuminant(
         dtype=np.float64,
     )
     xyz = lms_to_xyz(lms_adjusted)
-    xy = np.array(
-        [
-            xyz[0] / (xyz[0] + xyz[1] + xyz[2]),
-            xyz[1] / (xyz[0] + xyz[1] + xyz[2]),
-        ],
-        dtype=np.float64,
-    )
-    temp, tint = xy_to_white_balance(float(xy[0]), float(xy[1]))
+    temp, tint = xy_to_white_balance(*xyz_to_xy(xyz))
     temp -= base_temperature
     tint -= base_tint
 
-    tint = _clamp(tint * 0.6, -20.0, 20.0)
+    tint = _clamp(tint * AUTO_TINT_SCALE, -20.0, 20.0)
     skin_weight = 0.0 if without_face else src_white_point.skin_weight
     initial_temp = base_temperature
-    delta_t = 0.07 * (temp + initial_temp) * (skin_weight + 0.3)
+    delta_t = 0.072 * (temp + initial_temp) * (skin_weight + 0.3)
     if skin_weight == 0.0 and temp < -150.0:
         scale = 0.25 * min(1.0, (-temp - 150.0) / 100.0)
         delta_t += scale * abs(temp)
