@@ -7,14 +7,17 @@ import io
 
 import numpy as np
 
-from .image_ops import PROBE_MAX_EDGE, downscale_hwc_max_edge
+from .image_ops import downscale_hwc_max_edge
+
+# Live UI only — queued IMAGE output stays full resolution
+LIVE_PREVIEW_MAX_EDGE = 2048
 
 
 def pack_live_cache(source_hwc: np.ndarray, merged_lut: np.ndarray) -> dict:
     """JSON-serializable bundle for the Comfy front-end (PNG + float32 LUT)."""
     from PIL import Image
 
-    small = downscale_hwc_max_edge(source_hwc, PROBE_MAX_EDGE)
+    small = downscale_hwc_max_edge(source_hwc, LIVE_PREVIEW_MAX_EDGE)
     merged = np.asarray(merged_lut, dtype=np.float32).reshape(-1)
 
     arr_u8 = (np.clip(small, 0, 1) * 255.0).astype(np.uint8)

@@ -7,7 +7,6 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from .magicmatch_core.image_ops import prepare_apply_source
 from .magicmatch_core.inference import build_merged_lut
 from .magicmatch_core.live_cache import pack_live_cache
 from .magicmatch_core.lut import apply_merged_lut_preview
@@ -105,7 +104,7 @@ class MagicMatchPreview:
     FUNCTION = "preview"
     CATEGORY = "MAGICMATCH"
     DESCRIPTION = (
-        "Apply cached LUT at probe parity (960px max edge, PIL 256 net). "
+        "Apply cached LUT at full source resolution (PIL 256 net for Build). "
         "Live slider after first run; queue again to export."
     )
 
@@ -160,9 +159,7 @@ class MagicMatch:
     RETURN_NAMES = ("image",)
     FUNCTION = "match"
     CATEGORY = "MAGICMATCH"
-    DESCRIPTION = (
-        "One-shot color match; output at 960px max edge like the standalone probe."
-    )
+    DESCRIPTION = "Single-node color match at full resolution (PIL 256 net)."
 
     def match(
         self,
@@ -173,9 +170,8 @@ class MagicMatch:
         src = _image_batch_to_hwc(source)
         ref = _image_batch_to_hwc(reference)
         merged = build_merged_lut(src, ref)
-        src_apply = prepare_apply_source(src)
         strength = float(np.clip(strength, 0.0, 1.0))
-        out = apply_merged_lut_preview(src_apply, merged, strength)
+        out = apply_merged_lut_preview(src, merged, strength)
         return (_hwc_to_image(out),)
 
 
