@@ -26,6 +26,56 @@ def _histogram_256(lum: torch.Tensor) -> torch.Tensor:
 
 
 @torch.inference_mode()
+def get_face_area_luminance_statistics_torch(
+    large_hwc: torch.Tensor,
+    face_detection_results: list[dict],
+) -> dict[str, float | list[float] | int]:
+    """GPU face-area luminance from face boxes only (no full-buffer CPU download)."""
+    h, w, _ = large_hwc.shape
+    total_pixels = max(h * w, 1)
+    face_lum = 0.0
+    face_percent = 0.0
+    face_percentiles: list[float] = []
+    face_clipping_highlights = 0.0
+    face_clipping_shadows = 0.0
+    face_count = len(face_detection_results)
+
+    if face_detection_results:
+        lum_parts: list[torch.Tensor] = []
+        face_pixel_count = 0
+        for result in face_detection_results:
+            x1, y1, x2, y2 = result["face_box"]
+            x1 = max(0, int(x1))
+            y1 = max(0, int(y1))
+            x2 = min(w, int(x2))
+            y2 = min(h, int(y2))
+            if x2 <= x1 or y2 <= y1:
+                continue
+            crop = large_hwc[y1:y2, x1:x2]
+            lum_parts.append(_lightness_from_small_hwc(crop).reshape(-1))
+            face_pixel_count += (x2 - x1) * (y2 - y1)
+        if lum_parts:
+            face_lum_t = torch.cat(lum_parts)
+            face_histogram = _histogram_256(face_lum_t)
+            hist_np = face_histogram.cpu().numpy()
+            face_lum = float(face_lum_t.mean().item())
+            face_percent = float(face_pixel_count / total_pixels)
+            face_percentiles = compute_percentiles(hist_np)
+            n = max(int(face_lum_t.numel()), 1)
+            face_clipping_highlights = float(hist_np[251:256].sum() / n)
+            face_clipping_shadows = float((hist_np[0] if len(hist_np) else 0) / n)
+
+    return {
+        "facePercentiles": face_percentiles,
+        "facePercent": face_percent,
+        "faceLum": face_lum,
+        "faceCount": face_count,
+        "faceClippingHighlights": face_clipping_highlights,
+        "faceClippingShadows": face_clipping_shadows,
+    }
+
+
+@torch.inference_mode()
 def get_luminance_statistics_torch(
     small_hwc: torch.Tensor,
     large_hwc: torch.Tensor,
@@ -46,11 +96,7 @@ def get_luminance_statistics_torch(
     face_lum = 0.0
     face_percentiles: list[float] = []
     if face_detection_results:
-        from ..probe_parity.luminance import get_face_area_luminance_statistics
-        from .device import hwc_torch_to_numpy
-
-        large_np = hwc_torch_to_numpy(large_hwc)
-        face_stats = get_face_area_luminance_statistics(large_np, face_detection_results, None)
+        face_stats = get_face_area_luminance_statistics_torch(large_hwc, face_detection_results)
         face_percentiles = face_stats["facePercentiles"]
         face_percent = float(face_stats["facePercent"])
         face_lum = float(face_stats["faceLum"])

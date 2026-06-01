@@ -35,3 +35,9 @@ def prepare_net_reference_torch(reference_hwc: torch.Tensor | "np.ndarray") -> t
     ref256_np = hwc_torch_to_numpy(ref256_t)
     webp_np = webp_roundtrip(ref256_np, quality=REF_WEBP_QUALITY)
     return hwc_numpy_to_torch(webp_np, device)
+
+
+@torch.inference_mode()
+def prepare_net_reference_fast_torch(reference_hwc: torch.Tensor) -> torch.Tensor:
+    """Fast net reference: bilinear 256×256 on GPU, no JPEG/WebP round-trips."""
+    return resize_bilinear_torch(reference_hwc, NET_INPUT_SIZE, NET_INPUT_SIZE)

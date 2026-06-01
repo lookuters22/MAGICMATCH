@@ -27,6 +27,16 @@ if os.environ.get("MAGICMATCH_GPU_FULL_NODES", "1") != "0":
         **GPU_FULL_NODE_DISPLAY_NAME_MAPPINGS,
     }
 
+# Fast GPU pipeline nodes (speed over parity; set MAGICMATCH_GPU_FAST_NODES=0 to hide).
+if os.environ.get("MAGICMATCH_GPU_FAST_NODES", "1") != "0":
+    from .nodes_gpu_fast import GPU_FAST_NODE_CLASS_MAPPINGS, GPU_FAST_NODE_DISPLAY_NAME_MAPPINGS
+
+    NODE_CLASS_MAPPINGS = {**NODE_CLASS_MAPPINGS, **GPU_FAST_NODE_CLASS_MAPPINGS}
+    NODE_DISPLAY_NAME_MAPPINGS = {
+        **NODE_DISPLAY_NAME_MAPPINGS,
+        **GPU_FAST_NODE_DISPLAY_NAME_MAPPINGS,
+    }
+
 WEB_DIRECTORY = os.path.join(os.path.dirname(__file__), "js")
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
