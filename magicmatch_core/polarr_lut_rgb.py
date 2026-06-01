@@ -22,61 +22,34 @@ from .polarr_color_space import (
 LUT_SIZE = 25
 
 
-def _sample_bilinear(tex: np.ndarray, width: int, height: int, u: float, v: float) -> np.ndarray:
-    x = u * (width - 1)
-    y = v * (height - 1)
-    x0 = int(np.floor(x))
-    y0 = int(np.floor(y))
-    x1 = min(x0 + 1, width - 1)
-    y1 = min(y0 + 1, height - 1)
-    fx = x - x0
-    fy = y - y0
+def _merged_lut_to_texture(merged_lut_rgb: np.ndarray) -> np.ndarray:
+    """Flat RGB merged LUT → (hue=25, sat²=625, 3) — createUserLutTexture layout."""
+    tex = np.asarray(merged_lut_rgb, dtype=np.float32).reshape(-1)
+    expected = LUT_SIZE * LUT_SIZE * LUT_SIZE * 3
+    if tex.size != expected:
+        raise ValueError(f"merged LUT must be {expected} floats, got {tex.size}")
+    return tex.reshape(LUT_SIZE, LUT_SIZE * LUT_SIZE, 3)
 
-    def pix(ix: int, iy: int) -> np.ndarray:
-        idx = (iy * width + ix) * 3
-        return tex[idx : idx + 3].astype(np.float32)
 
-    c00, c01 = pix(x0, y0), pix(x1, y0)
-    c10, c11 = pix(x0, y1), pix(x1, y1)
+def _sample_bilinear_hw3(tex: np.ndarray, u: np.ndarray, v: np.ndarray) -> np.ndarray:
+    """Vectorized bilinear sample on H×W×3 texture; u,v are (N,) in [0, 1]."""
+    height, width = tex.shape[:2]
+    x = np.clip(u, 0.0, 1.0) * (width - 1)
+    y = np.clip(v, 0.0, 1.0) * (height - 1)
+    x0 = np.floor(x).astype(np.int32)
+    y0 = np.floor(y).astype(np.int32)
+    x1 = np.minimum(x0 + 1, width - 1)
+    y1 = np.minimum(y0 + 1, height - 1)
+    fx = (x - x0)[:, np.newaxis]
+    fy = (y - y0)[:, np.newaxis]
+
+    c00 = tex[y0, x0]
+    c01 = tex[y0, x1]
+    c10 = tex[y1, x0]
+    c11 = tex[y1, x1]
     c0 = c00 * (1.0 - fx) + c01 * fx
     c1 = c10 * (1.0 - fx) + c11 * fx
     return c0 * (1.0 - fy) + c1 * fy
-
-
-def _apply_look_table_rgb_pixel(
-    color: np.ndarray,
-    tex: np.ndarray,
-    lut_size: int,
-    strength: float,
-    gamma_type: int,
-    primaries_type: int,
-) -> np.ndarray:
-    orig = color.astype(np.float32, copy=True)
-    tmp = lut_primaries_encode(orig, primaries_type)
-    tmp = np.clip(tmp, 0.0, 1.0)
-    tmp = lut_gamma_encode(tmp, gamma_type)
-
-    size_index = float(lut_size - 1)
-    b, r, g = float(tmp[2]), float(tmp[0]), float(tmp[1])
-    tex_x_base = (b * size_index + 0.5) / lut_size
-    tex_y = (r * size_index + 0.5) / lut_size
-    z = g * size_index
-
-    width = lut_size * lut_size
-    height = lut_size
-    z_floor = int(np.floor(z))
-    zf = (z_floor + tex_x_base) / lut_size
-    zc = (min(z_floor + 1, int(size_index)) + tex_x_base) / lut_size
-
-    col1 = _sample_bilinear(tex, width, height, zf, tex_y)
-    col2 = _sample_bilinear(tex, width, height, zc, tex_y)
-    fract_z = z - z_floor
-    mapped = col1 * (1.0 - fract_z) + col2 * fract_z
-
-    mapped = lut_gamma_decode(mapped, gamma_type)
-    mapped = lut_primaries_decode(mapped, primaries_type)
-    s = float(np.clip(strength, 0.0, 1.0))
-    return orig * (1.0 - s) + mapped * s
 
 
 def apply_polarr_rgb_lut_prophoto(
@@ -88,18 +61,34 @@ def apply_polarr_rgb_lut_prophoto(
     rgb_primaries: int = 0,
 ) -> np.ndarray:
     """Apply user RGB LUT on ProPhoto-linear H×W×3 (matches GPU adjustments.frag path)."""
-    hw = prophoto_hwc.reshape(-1, 3).astype(np.float32)
-    tex = np.asarray(merged_lut_rgb, dtype=np.float32).reshape(-1)
-    expected = LUT_SIZE * LUT_SIZE * LUT_SIZE * 3
-    if tex.size != expected:
-        raise ValueError(f"merged LUT must be {expected} floats, got {tex.size}")
+    shape = prophoto_hwc.shape
+    orig = np.asarray(prophoto_hwc, dtype=np.float32).reshape(-1, 3)
+    tex = _merged_lut_to_texture(merged_lut_rgb)
 
-    out = np.empty_like(hw)
-    for i in range(hw.shape[0]):
-        out[i] = _apply_look_table_rgb_pixel(
-            hw[i], tex, LUT_SIZE, strength, rgb_gamma, rgb_primaries
-        )
-    return np.clip(out.reshape(prophoto_hwc.shape), 0.0, 1.0)
+    tmp = lut_primaries_encode(prophoto_hwc, rgb_primaries)
+    tmp = np.clip(tmp, 0.0, 1.0)
+    tmp = lut_gamma_encode(tmp, rgb_gamma).reshape(-1, 3)
+
+    size_index = float(LUT_SIZE - 1)
+    r, g, b = tmp[:, 0], tmp[:, 1], tmp[:, 2]
+    tex_x_base = (b * size_index + 0.5) / LUT_SIZE
+    tex_y = (r * size_index + 0.5) / LUT_SIZE
+    z = g * size_index
+    z_floor = np.floor(z).astype(np.int32)
+    z_next = np.minimum(z_floor + 1, int(size_index))
+    zf = (z_floor.astype(np.float32) + tex_x_base) / LUT_SIZE
+    zc = (z_next.astype(np.float32) + tex_x_base) / LUT_SIZE
+
+    col1 = _sample_bilinear_hw3(tex, zf, tex_y)
+    col2 = _sample_bilinear_hw3(tex, zc, tex_y)
+    fract_z = (z - z_floor)[:, np.newaxis]
+    mapped = col1 * (1.0 - fract_z) + col2 * fract_z
+
+    mapped = lut_gamma_decode(mapped.reshape(shape), rgb_gamma).reshape(-1, 3)
+    mapped = lut_primaries_decode(mapped.reshape(shape), rgb_primaries).reshape(-1, 3)
+    s = float(np.clip(strength, 0.0, 1.0))
+    out = orig * (1.0 - s) + mapped * s
+    return np.clip(out.reshape(shape), 0.0, 1.0)
 
 
 def apply_polarr_color_match_probe_style(

@@ -114,6 +114,8 @@ class MagicMatchBuild:
     def IS_CHANGED(cls, source, reference):
         import hashlib
 
+        if source is None or reference is None:
+            return float("nan")
         s = hashlib.sha1(source.detach().cpu().numpy().tobytes()).hexdigest()[:16]
         r = hashlib.sha1(reference.detach().cpu().numpy().tobytes()).hexdigest()[:16]
         return (s, r)
@@ -163,6 +165,8 @@ class MagicMatchPreview:
     def IS_CHANGED(cls, source, lut, strength, lut_encoding="srgb_srgb", render_mode=RENDER_POLARR_PROBE):
         import hashlib
 
+        if source is None or lut is None:
+            return float("nan")
         src = source.detach().cpu().numpy()
         src_key = hashlib.sha1(src.tobytes()).hexdigest()[:16]
         lut_key = hashlib.sha1(lut.merged_lut.tobytes()).hexdigest()[:16]
@@ -226,6 +230,8 @@ class MagicMatch:
     def IS_CHANGED(cls, source, reference, strength, lut_encoding="srgb_srgb", render_mode=RENDER_POLARR_PROBE):
         import hashlib
 
+        if source is None or reference is None:
+            return float("nan")
         s = hashlib.sha1(source.detach().cpu().numpy().tobytes()).hexdigest()[:16]
         r = hashlib.sha1(reference.detach().cpu().numpy().tobytes()).hexdigest()[:16]
         return (s, r, float(strength), lut_encoding, render_mode)
