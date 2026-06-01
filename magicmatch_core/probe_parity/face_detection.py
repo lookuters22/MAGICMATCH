@@ -139,9 +139,10 @@ def _preprocess_detect(hwc: np.ndarray, size: tuple[int, int], adjusted_gamma: f
 
 
 def _preprocess_skin(hwc: np.ndarray, adjusted_gamma: float) -> np.ndarray:
+    """Match face-detection.ts createTensorForSkin (0–255 → gamma → /127.5 − 1, NCHW)."""
     resized = resize_hwc(hwc, FACE_PARSE_SIZE, FACE_PARSE_SIZE, high_quality=False)
-    rgb = _gamma_correct(resized, adjusted_gamma)
-    chw = np.transpose(rgb, (2, 0, 1))
+    rgb255 = _gamma_correct(resized, adjusted_gamma) * 255.0
+    chw = np.transpose(rgb255, (2, 0, 1))
     chw = chw / 127.5 - 1.0
     return chw[np.newaxis, ...].astype(np.float32)
 
