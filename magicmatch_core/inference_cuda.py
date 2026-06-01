@@ -103,10 +103,10 @@ def build_merged_lut_with_base_cuda(
     source_hwc: np.ndarray,
     reference_hwc: np.ndarray,
 ) -> tuple[np.ndarray, dict]:
-    from .gpu.pipeline_full_gpu import build_merged_lut_full_gpu
+    """CPU parity scene extract + develop; CUDA ONNX only (golden LUT path)."""
+    from .probe_parity.pipeline_cuda import build_merged_lut_probe_style_cuda
 
-    state = build_merged_lut_full_gpu(source_hwc, reference_hwc)
-    return state.merged_lut, state.base_adjustments
+    return build_merged_lut_probe_style_cuda(source_hwc, reference_hwc)
 
 
 def color_match_session_info() -> dict[str, str | bool]:
