@@ -1,14 +1,14 @@
 """
-Experimental ComfyUI nodes — CUDA ONNX inference path.
+Experimental ComfyUI nodes — full GPU pipeline (CUDA ONNX + Torch develop/buffers/LUT).
 
-CPU nodes in nodes.py are unchanged. Use these for GPU testing on H100/Linux;
-Preview/apply still uses the CPU NumPy develop stack.
+CPU nodes in nodes.py are unchanged. Use these on H100/Linux for speed testing.
 """
 
 from __future__ import annotations
 
 import torch
 
+from .magicmatch_core.gpu.pipeline import apply_probe_export_gpu
 from .magicmatch_core.inference_cuda import build_merged_lut_with_base_cuda
 from .nodes import (
     MagicMatchLUT,
@@ -19,11 +19,11 @@ from .nodes import (
     _normalize_render_mode,
     _render_options,
 )
-from .magicmatch_core.apply import apply_merged_lut_output
+from .magicmatch_core.apply import RENDER_PROBE_EXPORT, apply_merged_lut_output
 
 
 class MagicMatchBuildCUDA:
-    """Analyze source + reference (CUDA ONNX when available). Wire into MagicMatch Preview."""
+    """Analyze source + reference (GPU ONNX + GPU detection/develop prep)."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -39,8 +39,8 @@ class MagicMatchBuildCUDA:
     FUNCTION = "build"
     CATEGORY = "MAGICMATCH/CUDA (experimental)"
     DESCRIPTION = (
-        "Build merged LUT via CUDA ONNX (color_match + face models). "
-        "Falls back to CPU EP if CUDA unavailable. CPU Build node unchanged."
+        "Build merged LUT: CUDA ONNX + GPU detection buffers + GPU develop@1600. "
+        "CPU Build node unchanged."
     )
 
     @classmethod
@@ -61,7 +61,7 @@ class MagicMatchBuildCUDA:
 
 
 class MagicMatchCUDA:
-    """One-shot CUDA color match (re-runs ONNX when strength changes)."""
+    """One-shot GPU color match (CUDA ONNX + GPU develop/LUT apply)."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -87,7 +87,7 @@ class MagicMatchCUDA:
     RETURN_NAMES = ("image",)
     FUNCTION = "match"
     CATEGORY = "MAGICMATCH/CUDA (experimental)"
-    DESCRIPTION = "One-shot color match with CUDA ONNX build; apply path is CPU NumPy."
+    DESCRIPTION = "One-shot: GPU build + GPU probe_export apply when CUDA available."
 
     @classmethod
     def IS_CHANGED(
@@ -96,7 +96,7 @@ class MagicMatchCUDA:
         reference,
         strength,
         lut_encoding="srgb_srgb",
-        render_mode="probe_export",
+        render_mode=RENDER_PROBE_EXPORT,
         profile_stage="current_profile_stages",
     ):
         import hashlib
@@ -113,7 +113,7 @@ class MagicMatchCUDA:
         reference: torch.Tensor,
         strength: float,
         lut_encoding: str = "srgb_srgb",
-        render_mode: str = "probe_export",
+        render_mode: str = RENDER_PROBE_EXPORT,
         profile_stage: str = "current_profile_stages",
     ) -> tuple[torch.Tensor]:
         from .magicmatch_core.probe_parity.profile_stage import normalize_profile_stage
@@ -124,26 +124,74 @@ class MagicMatchCUDA:
         render_mode = _normalize_render_mode(render_mode)
         profile_stage = normalize_profile_stage(profile_stage)
         merged, base = build_merged_lut_with_base_cuda(src, ref)
-        out = apply_merged_lut_output(
-            src,
-            merged,
-            strength,
-            render_mode=render_mode,
-            lut_encoding=lut_encoding,
-            profile_stage=profile_stage,
-            base_adjustments=base,
-        )
+        if render_mode == RENDER_PROBE_EXPORT:
+            out = apply_probe_export_gpu(
+                src,
+                merged,
+                strength,
+                base_adjustments=base,
+                profile_stage=profile_stage,
+                lut_encoding=lut_encoding,
+            )
+        else:
+            out = apply_merged_lut_output(
+                src,
+                merged,
+                strength,
+                render_mode=render_mode,
+                lut_encoding=lut_encoding,
+                profile_stage=profile_stage,
+                base_adjustments=base,
+            )
         return (_hwc_to_image(out),)
 
 
 class MagicMatchPreviewCUDA(MagicMatchPreview):
-    """Same as MagicMatch Preview — apply is CPU NumPy; included for workflow clarity."""
+    """GPU probe_export apply for LUTs built with MagicMatch Build CUDA."""
 
     CATEGORY = "MAGICMATCH/CUDA (experimental)"
-    DESCRIPTION = (
-        "Full-res apply for LUTs built with MagicMatch Build CUDA. "
-        "Identical to MagicMatch Preview (CPU develop stack)."
-    )
+    DESCRIPTION = "Full-res GPU develop + LUT apply (probe_export). Use with Build CUDA."
+
+    def preview(
+        self,
+        source: torch.Tensor,
+        lut: MagicMatchLUT,
+        strength: float,
+        lut_encoding: str = "srgb_srgb",
+        render_mode: str = RENDER_PROBE_EXPORT,
+        profile_stage: str = "current_profile_stages",
+    ) -> dict:
+        from .magicmatch_core.live_cache import pack_live_cache
+        from .magicmatch_core.probe_parity.profile_stage import normalize_profile_stage
+
+        src = _image_batch_to_hwc(source)
+        lut_encoding = _normalize_lut_encoding(lut_encoding)
+        render_mode = _normalize_render_mode(render_mode)
+        profile_stage = normalize_profile_stage(profile_stage)
+        if render_mode == RENDER_PROBE_EXPORT:
+            out = apply_probe_export_gpu(
+                src,
+                lut.merged_lut,
+                strength,
+                base_adjustments=lut.base_adjustments,
+                profile_stage=profile_stage,
+                lut_encoding=lut_encoding,
+            )
+        else:
+            out = apply_merged_lut_output(
+                src,
+                lut.merged_lut,
+                strength,
+                render_mode=render_mode,
+                lut_encoding=lut_encoding,
+                profile_stage=profile_stage,
+                base_adjustments=lut.base_adjustments,
+            )
+        cache = pack_live_cache(src, lut.merged_lut)
+        return {
+            "ui": {"magicmatch_live": [cache]},
+            "result": (_hwc_to_image(out),),
+        }
 
 
 CUDA_NODE_CLASS_MAPPINGS = {

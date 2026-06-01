@@ -81,7 +81,10 @@ pip install -r MAGICMATCH/requirements-cuda.txt
 ```
 
 Requires NVIDIA driver + CUDA libs compatible with your `onnxruntime-gpu` wheel.
-On Windows or machines without CUDA, CUDA nodes fall back to CPU EP automatically.
+ComfyUI already provides PyTorch with CUDA — the GPU pipeline uses Torch for develop,
+detection buffers, and LUT apply (ONNX uses CUDA EP).
+
+On machines without CUDA, CUDA nodes fall back to CPU EP + CPU Torch automatically.
 
 ### ComfyUI nodes
 
@@ -93,9 +96,13 @@ After restart, look under **MAGICMATCH/CUDA (experimental)**:
 | `MagicMatchPreviewCUDA` | MagicMatch Preview (CUDA LUT) |
 | `MagicMatchCUDA` | MagicMatch one-shot (CUDA) |
 
-Preview/apply still uses the CPU NumPy develop stack; only ONNX `sess.run` moves to GPU.
+**GPU pipeline (CUDA nodes):** CUDA ONNX + GPU detection buffers + GPU develop@1600 + GPU full-res apply.
 
-Set `MAGICMATCH_CUDA_NODES=0` before starting ComfyUI to hide CUDA nodes (CPU-only menu).
+**CPU default nodes** under **MAGICMATCH** are unchanged.
+
+Set `MAGICMATCH_CUDA_NODES=0` before starting ComfyUI to hide CUDA nodes.
+
+Use `python3.12` on RunPod if `python` is not on PATH.
 
 ### Benchmark / parity
 

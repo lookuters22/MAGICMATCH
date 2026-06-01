@@ -63,9 +63,9 @@ def build_merged_lut_with_base_cuda(
     source_hwc: np.ndarray,
     reference_hwc: np.ndarray,
 ) -> tuple[np.ndarray, dict]:
-    from .probe_parity.pipeline_cuda import build_merged_lut_probe_style_cuda
+    from .gpu.pipeline import build_merged_lut_probe_style_gpu
 
-    return build_merged_lut_probe_style_cuda(source_hwc, reference_hwc)
+    return build_merged_lut_probe_style_gpu(source_hwc, reference_hwc)
 
 
 def color_match_session_info() -> dict[str, str | bool]:

@@ -29,6 +29,7 @@ from magicmatch_core.inference_cuda import (  # noqa: E402
     run_inference_from_images_cuda,
 )
 from magicmatch_core.onnx_providers import cuda_available, get_available_providers  # noqa: E402
+from magicmatch_core.gpu.device import gpu_pipeline_available  # noqa: E402
 from magicmatch_core.probe_parity.face_detection import detect_faces  # noqa: E402
 from magicmatch_core.probe_parity.face_detection_cuda import (  # noqa: E402
     detect_faces_cuda,
@@ -157,6 +158,15 @@ def main() -> int:
         lambda: build_merged_lut_with_base_cuda(src, ref),
         repeats=args.repeats,
     )
+    if gpu_pipeline_available():
+        from magicmatch_core.gpu.pipeline import build_merged_lut_probe_style_gpu
+
+        _, t_gpu_build = _timed(
+            "GPU full pipeline build_merged_lut_probe_style_gpu",
+            lambda: build_merged_lut_probe_style_gpu(src, ref),
+            repeats=args.repeats,
+        )
+        report["gpu_full_build_ms"] = round(t_gpu_build * 1000, 2)
     merged_cpu, _ = build_cpu
     merged_cuda, _ = build_cuda
     hash_cpu = lut_hash(merged_cpu)

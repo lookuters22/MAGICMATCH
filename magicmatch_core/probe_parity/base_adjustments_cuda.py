@@ -12,6 +12,11 @@ def estimate_base_adjustments_cuda(
     source_hwc: np.ndarray,
     *,
     worker_feed_prepared: bool = False,
+    use_gpu_detection_buffers: bool = False,
 ) -> dict[str, float]:
-    scene = extract_scene_info_bitmap_cuda(source_hwc, worker_feed_prepared=worker_feed_prepared)
+    scene = extract_scene_info_bitmap_cuda(
+        source_hwc,
+        worker_feed_prepared=worker_feed_prepared,
+        use_gpu_detection_buffers=use_gpu_detection_buffers,
+    )
     return get_original_color_match_base_adjustments(scene)

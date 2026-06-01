@@ -34,6 +34,7 @@ def extract_scene_info_bitmap_cuda(
     source_path: Path | str | None = None,
     use_probe_browser: bool | None = None,
     worker_feed_prepared: bool = False,
+    use_gpu_detection_buffers: bool = False,
 ) -> SceneInfo:
     """Bitmap scene extract; face detect/parse ONNX runs on CUDA when available."""
     if use_probe_browser is None:
@@ -44,7 +45,21 @@ def extract_scene_info_bitmap_cuda(
         path = Path(source_path) if source_path is not None else None
         return extract_scene_via_probe_browser(path or source_hwc)
 
-    small, large = render_detection_inputs(source_hwc, worker_feed_prepared=worker_feed_prepared)
+    if use_gpu_detection_buffers:
+        from ..gpu.device import gpu_pipeline_available
+        from ..gpu.reference_torch import render_detection_inputs_numpy
+
+        if gpu_pipeline_available():
+            feed = source_hwc
+            if not worker_feed_prepared:
+                from .reference import prepare_worker_bitmap_source
+
+                feed = prepare_worker_bitmap_source(source_hwc)
+            small, large = render_detection_inputs_numpy(feed)
+        else:
+            small, large = render_detection_inputs(source_hwc, worker_feed_prepared=worker_feed_prepared)
+    else:
+        small, large = render_detection_inputs(source_hwc, worker_feed_prepared=worker_feed_prepared)
     stats_noface = get_luminance_statistics(small, large, [])
     adjusted_gamma = get_adjusted_gamma(stats_noface)
 
