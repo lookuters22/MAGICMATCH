@@ -41,17 +41,17 @@ Use **Build** + **Preview** so changing the slider only re-applies the LUT (fast
 | Step | Node |
 |------|------|
 | 1 | **MagicMatch Build LUT** — run once per source/reference pair |
-| 2 | **MagicMatch Preview (strength)** — `0` = unchanged source, `1` = full match. Keep **auto_refresh** on: moving the slider auto-runs preview (~0.5s); **Build LUT** stays cached |
-| 3 | Connect preview output to your save/export chain |
+| 2 | **MagicMatch Preview (strength)** — run once, then use the **live preview inside the node** and drag **strength** (no re-queue) |
+| 3 | When happy with the slider, **Queue** again and connect output to Save / export |
 
-### Strength slider (no manual Queue each time)
+### In-node live preview
 
-ComfyUI does not preview inside the node graph by default. MAGICMATCH includes a small UI extension:
+1. Run the workflow **once** (Build + Preview execute; LUT is cached).
+2. Open the **MagicMatch Preview** node — you’ll see a **live image** under the widgets.
+3. Drag **strength** — preview updates **instantly** in the node (WebGL, no workflow re-run).
+4. When the look is right, **Queue Prompt** once more so the **image** output matches the slider, then save/export.
 
-- **auto_refresh = on** (default): after you run the workflow once, dragging **strength** automatically queues again. Only **Preview** re-runs; **Build LUT** is skipped (cached).
-- Turn **auto_refresh** off if you prefer to click **Queue Prompt** yourself.
-
-The LUT is already “saved” on the green **lut** wire between Build and Preview — you do not re-run the neural net when only strength changes.
+Live preview uses a fast GPU blend for scrubbing; the queued **image** output uses the full CPU LUT path (same as before).
 
 **MagicMatch (one-shot)** combines build + apply in one node (simpler, slower when you change strength).
 

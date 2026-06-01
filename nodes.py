@@ -8,6 +8,7 @@ import numpy as np
 import torch
 
 from .magicmatch_core.inference import build_merged_lut
+from .magicmatch_core.live_cache import pack_live_cache
 from .magicmatch_core.lut import apply_merged_lut_preview
 
 
@@ -73,9 +74,8 @@ class MagicMatchBuild:
 
 class MagicMatchPreview:
     """
-    Apply cached LUT with strength slider — fast while tuning.
-    Connect to Preview Image, adjust strength, re-queue.
-    Then connect downstream to save/export.
+    Apply cached LUT. After one workflow run, use the in-node live preview + strength
+    slider (no re-queue). Queue again when exporting at the chosen strength.
     """
 
     @classmethod
@@ -94,14 +94,6 @@ class MagicMatchPreview:
                         "display": "slider",
                     },
                 ),
-                "auto_refresh": (
-                    "BOOLEAN",
-                    {
-                        "default": True,
-                        "label_on": "on",
-                        "label_off": "off",
-                    },
-                ),
             },
         }
 
@@ -110,13 +102,12 @@ class MagicMatchPreview:
     FUNCTION = "preview"
     CATEGORY = "MAGICMATCH"
     DESCRIPTION = (
-        "Preview color match at chosen strength. With auto_refresh on, moving the "
-        "slider re-runs this node automatically (Build LUT stays cached)."
+        "In-node live preview after first run. Drag strength without re-queue; "
+        "queue again to bake the same strength into the output image."
     )
 
     @classmethod
-    def IS_CHANGED(cls, source, lut, strength, auto_refresh=True):
-        # Re-run when strength changes; Build LUT node is unchanged and stays cached.
+    def IS_CHANGED(cls, source, lut, strength):
         import hashlib
 
         src = source.detach().cpu().numpy()
@@ -129,12 +120,15 @@ class MagicMatchPreview:
         source: torch.Tensor,
         lut: MagicMatchLUT,
         strength: float,
-        auto_refresh: bool = True,
-    ) -> tuple[torch.Tensor]:
+    ) -> dict:
         src = _image_batch_to_hwc(source)
         strength = float(np.clip(strength, 0.0, 1.0))
         out = apply_merged_lut_preview(src, lut.merged_lut, strength)
-        return (_hwc_to_image(out),)
+        cache = pack_live_cache(src, lut.merged_lut)
+        return {
+            "ui": {"magicmatch_live": [cache]},
+            "result": (_hwc_to_image(out),),
+        }
 
 
 class MagicMatch:
