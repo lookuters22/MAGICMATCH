@@ -8,7 +8,7 @@ ComfyUI custom nodes for **neural color match**: two images in, graded source ou
 
    ```bash
    cd ComfyUI/custom_nodes
-   git clone https://github.com/YOUR_USER/MAGICMATCH.git
+   git clone https://github.com/<your-github-user>/MAGICMATCH.git
    ```
 
 2. Install Python deps (ComfyUI’s environment):
