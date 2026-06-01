@@ -20,16 +20,11 @@ def _clamp(x: float, lo: float, hi: float) -> float:
 
 def get_lightness_rgba(rgba: np.ndarray, *, channel: int = 4, scale: float = 255.0) -> np.ndarray:
     """Port of getLightness from ai-calibration-brightness.ts."""
-    data = np.asarray(rgba, dtype=np.float64).reshape(-1)
-    n = len(data) // channel
-    out = np.empty(n, dtype=np.float64)
-    for i in range(n):
-        base = i * channel
-        r = data[base] / scale
-        g = data[base + 1] / scale
-        b = data[base + 2] / scale
-        out[i] = (max(r, g, b) + min(r, g, b)) * 0.5
-    return out
+    data = np.asarray(rgba, dtype=np.float64).reshape(-1, channel)
+    r = data[:, 0] / scale
+    g = data[:, 1] / scale
+    b = data[:, 2] / scale
+    return (np.maximum(r, g, b) + np.minimum(r, g, b)) * 0.5
 
 
 def get_lightness_hwc(hwc: np.ndarray) -> np.ndarray:

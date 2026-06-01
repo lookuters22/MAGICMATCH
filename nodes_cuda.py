@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import torch
 
-from .magicmatch_core.gpu.pipeline import apply_probe_export_gpu
+from .magicmatch_core.gpu.pipeline import apply_probe_export_gpu, color_match_one_shot_gpu
 from .magicmatch_core.inference_cuda import build_merged_lut_with_base_cuda
 from .nodes import (
     MagicMatchLUT,
@@ -123,17 +123,16 @@ class MagicMatchCUDA:
         lut_encoding = _normalize_lut_encoding(lut_encoding)
         render_mode = _normalize_render_mode(render_mode)
         profile_stage = normalize_profile_stage(profile_stage)
-        merged, base = build_merged_lut_with_base_cuda(src, ref)
         if render_mode == RENDER_PROBE_EXPORT:
-            out = apply_probe_export_gpu(
+            out = color_match_one_shot_gpu(
                 src,
-                merged,
+                ref,
                 strength,
-                base_adjustments=base,
                 profile_stage=profile_stage,
                 lut_encoding=lut_encoding,
             )
         else:
+            merged, base = build_merged_lut_with_base_cuda(src, ref)
             out = apply_merged_lut_output(
                 src,
                 merged,

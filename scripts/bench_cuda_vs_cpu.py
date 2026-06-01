@@ -75,6 +75,11 @@ def main() -> int:
         default=3,
         help="Timed repeats per benchmark (after warm-up)",
     )
+    parser.add_argument(
+        "--profile-gpu",
+        action="store_true",
+        help="Print per-phase GPU pipeline timings and exit",
+    )
     args = parser.parse_args()
 
     default_pair = (
@@ -89,6 +94,12 @@ def main() -> int:
 
     src = load_rgb(source_path)
     ref = load_rgb(reference_path)
+
+    if args.profile_gpu:
+        from magicmatch_core.gpu.pipeline import profile_gpu_pipeline
+
+        print(json.dumps(profile_gpu_pipeline(src, ref), indent=2))
+        return 0
 
     report: dict[str, object] = {
         "source": str(source_path),

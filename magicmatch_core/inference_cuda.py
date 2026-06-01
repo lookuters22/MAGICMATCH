@@ -25,6 +25,13 @@ from .inference import (
 )
 from .onnx_providers import create_onnx_session, cuda_available, session_active_provider
 
+try:
+    import torch
+
+    _TORCH = True
+except ImportError:
+    _TORCH = False
+
 _SESSION_CUDA: ort.InferenceSession | None = None
 
 
@@ -48,9 +55,38 @@ def run_inference_from_images_cuda(
     session: ort.InferenceSession | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Run color_match.onnx on GPU when CUDA EP is available; CPU fallback otherwise."""
+    if _TORCH and torch.cuda.is_available():
+        from .gpu.device import hwc_numpy_to_torch
+
+        src_t = hwc_numpy_to_torch(source_hwc, torch.device("cuda"))
+        return run_inference_from_images_cuda_tensors(src_t, reference_hwc, session=session)
     sess = session or get_session_cuda()
     feeds = {
         INPUT_NAMES[0]: _resize_hwc_to_nhwc(source_hwc),
+        INPUT_NAMES[1]: _resize_hwc_to_nhwc(reference_hwc),
+    }
+    out_map = {o.name: o for o in sess.get_outputs()}
+    names = [out_map[OUTPUT_LUT3D].name, out_map[OUTPUT_LUT1D].name]
+    lut3d, lut1d = sess.run(names, feeds)
+    return np.asarray(lut3d, dtype=np.float32), np.asarray(lut1d, dtype=np.float32)
+
+
+def run_inference_from_images_cuda_tensors(
+    source_hwc: "torch.Tensor | np.ndarray",
+    reference_hwc: np.ndarray,
+    *,
+    session: ort.InferenceSession | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Run color_match.onnx; source may be a CUDA tensor (skips CPU resize)."""
+    from .gpu.resize_torch import hwc_to_nhwc_numpy
+
+    sess = session or get_session_cuda()
+    if _TORCH and isinstance(source_hwc, torch.Tensor):
+        src_feed = hwc_to_nhwc_numpy(source_hwc)
+    else:
+        src_feed = _resize_hwc_to_nhwc(np.asarray(source_hwc, dtype=np.float32))
+    feeds = {
+        INPUT_NAMES[0]: src_feed,
         INPUT_NAMES[1]: _resize_hwc_to_nhwc(reference_hwc),
     }
     out_map = {o.name: o for o in sess.get_outputs()}
@@ -65,7 +101,8 @@ def build_merged_lut_with_base_cuda(
 ) -> tuple[np.ndarray, dict]:
     from .gpu.pipeline import build_merged_lut_probe_style_gpu
 
-    return build_merged_lut_probe_style_gpu(source_hwc, reference_hwc)
+    merged, base, _feed = build_merged_lut_probe_style_gpu(source_hwc, reference_hwc)
+    return merged, base
 
 
 def color_match_session_info() -> dict[str, str | bool]:
