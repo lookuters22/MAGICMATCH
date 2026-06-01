@@ -7,6 +7,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 
+from .magicmatch_core.image_ops import prepare_apply_source
 from .magicmatch_core.inference import build_merged_lut
 from .magicmatch_core.live_cache import pack_live_cache
 from .magicmatch_core.lut import apply_merged_lut_preview
@@ -55,7 +56,9 @@ class MagicMatchBuild:
     RETURN_NAMES = ("lut",)
     FUNCTION = "build"
     CATEGORY = "MAGICMATCH"
-    DESCRIPTION = "Build merged color-match LUT from source + reference (run once per image pair)."
+    DESCRIPTION = (
+        "Build merged LUT (ONNX on full-res pair, PIL 256 — matches standalone probe)."
+    )
 
     @classmethod
     def IS_CHANGED(cls, source, reference):
@@ -102,8 +105,8 @@ class MagicMatchPreview:
     FUNCTION = "preview"
     CATEGORY = "MAGICMATCH"
     DESCRIPTION = (
-        "In-node live preview after first run. Drag strength without re-queue; "
-        "queue again to bake the same strength into the output image."
+        "Apply cached LUT at probe parity (960px max edge, PIL 256 net). "
+        "Live slider after first run; queue again to export."
     )
 
     @classmethod
@@ -121,10 +124,10 @@ class MagicMatchPreview:
         lut: MagicMatchLUT,
         strength: float,
     ) -> dict:
-        src = _image_batch_to_hwc(source)
+        src_apply = prepare_apply_source(_image_batch_to_hwc(source))
         strength = float(np.clip(strength, 0.0, 1.0))
-        out = apply_merged_lut_preview(src, lut.merged_lut, strength)
-        cache = pack_live_cache(src, lut.merged_lut)
+        out = apply_merged_lut_preview(src_apply, lut.merged_lut, strength)
+        cache = pack_live_cache(src_apply, lut.merged_lut)
         return {
             "ui": {"magicmatch_live": [cache]},
             "result": (_hwc_to_image(out),),
@@ -157,7 +160,9 @@ class MagicMatch:
     RETURN_NAMES = ("image",)
     FUNCTION = "match"
     CATEGORY = "MAGICMATCH"
-    DESCRIPTION = "Single-node color match (re-runs neural net when strength changes)."
+    DESCRIPTION = (
+        "One-shot color match; output at 960px max edge like the standalone probe."
+    )
 
     def match(
         self,
@@ -168,8 +173,9 @@ class MagicMatch:
         src = _image_batch_to_hwc(source)
         ref = _image_batch_to_hwc(reference)
         merged = build_merged_lut(src, ref)
+        src_apply = prepare_apply_source(src)
         strength = float(np.clip(strength, 0.0, 1.0))
-        out = apply_merged_lut_preview(src, merged, strength)
+        out = apply_merged_lut_preview(src_apply, merged, strength)
         return (_hwc_to_image(out),)
 
 

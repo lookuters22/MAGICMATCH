@@ -26,24 +26,15 @@ _SESSION: ort.InferenceSession | None = None
 
 
 def _resize_hwc_to_nhwc(image_hwc: np.ndarray, size: int = IMAGE_SIZE) -> np.ndarray:
-    """H×W×3 float [0,1] → [1, size, size, 3] bilinear."""
+    """H×W×3 float [0,1] → [1, size, size, 3] PIL bilinear (same as probe load_rgb_nhwc)."""
+    from PIL import Image
+
     image_hwc = np.asarray(image_hwc, dtype=np.float32)
-    try:
-        import torch
-        import torch.nn.functional as F
-
-        t = torch.from_numpy(image_hwc).permute(2, 0, 1).unsqueeze(0)
-        t = F.interpolate(t, size=(size, size), mode="bilinear", align_corners=False)
-        out = t.permute(0, 2, 3, 1).numpy().astype(np.float32)
-        return np.clip(out, 0.0, 1.0)
-    except ImportError:
-        from PIL import Image
-
-        arr = (np.clip(image_hwc, 0, 1) * 255.0).astype(np.uint8)
-        pil = Image.fromarray(arr, "RGB")
-        pil = pil.resize((size, size), Image.Resampling.BILINEAR)
-        out = np.asarray(pil, dtype=np.float32) / 255.0
-        return out[np.newaxis, ...]
+    arr = (np.clip(image_hwc, 0, 1) * 255.0).astype(np.uint8)
+    pil = Image.fromarray(arr, "RGB")
+    pil = pil.resize((size, size), Image.Resampling.BILINEAR)
+    out = np.asarray(pil, dtype=np.float32) / 255.0
+    return np.clip(out[np.newaxis, ...], 0.0, 1.0)
 
 
 def get_session(onnx_path: str | Path | None = None) -> ort.InferenceSession:

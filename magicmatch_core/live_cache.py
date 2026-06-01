@@ -7,35 +7,14 @@ import io
 
 import numpy as np
 
-LIVE_PREVIEW_MAX_EDGE = 2048
-
-
-def _downscale_hwc(hwc: np.ndarray, max_edge: int) -> np.ndarray:
-    hwc = np.asarray(hwc, dtype=np.float32)
-    h, w, _ = hwc.shape
-    scale = min(1.0, max_edge / max(h, w))
-    if scale >= 1.0:
-        return hwc.copy()
-    nw = max(1, int(w * scale))
-    nh = max(1, int(h * scale))
-    try:
-        from PIL import Image
-
-        arr = (np.clip(hwc, 0, 1) * 255.0).astype(np.uint8)
-        pil = Image.fromarray(arr, "RGB").resize((nw, nh), Image.Resampling.BILINEAR)
-        return np.asarray(pil, dtype=np.float32) / 255.0
-    except ImportError:
-        # Nearest stride fallback
-        ys = (np.linspace(0, h - 1, nh)).astype(np.int32)
-        xs = (np.linspace(0, w - 1, nw)).astype(np.int32)
-        return hwc[np.ix_(ys, xs)]
+from .image_ops import PROBE_MAX_EDGE, downscale_hwc_max_edge
 
 
 def pack_live_cache(source_hwc: np.ndarray, merged_lut: np.ndarray) -> dict:
     """JSON-serializable bundle for the Comfy front-end (PNG + float32 LUT)."""
     from PIL import Image
 
-    small = _downscale_hwc(source_hwc, LIVE_PREVIEW_MAX_EDGE)
+    small = downscale_hwc_max_edge(source_hwc, PROBE_MAX_EDGE)
     merged = np.asarray(merged_lut, dtype=np.float32).reshape(-1)
 
     arr_u8 = (np.clip(small, 0, 1) * 255.0).astype(np.uint8)
