@@ -10,10 +10,15 @@ import torch
 from .magicmatch_core.apply import (
     RENDER_NUMPY,
     RENDER_POLARR_PROBE,
+    RENDER_PROBE_EXPORT,
     apply_merged_lut_output,
 )
 from .magicmatch_core.inference import build_merged_lut
 from .magicmatch_core.live_cache import pack_live_cache
+from .magicmatch_core.probe_parity.profile_stage import (
+    PROFILE_STAGE_OPTIONS,
+    normalize_profile_stage,
+)
 
 LUT_ENCODING_OPTIONS = [
     "srgb_srgb",
@@ -27,15 +32,18 @@ LUT_ENCODING_OPTIONS = [
 
 # Include legacy aliases so pre-update workflows pass ComfyUI combo validation.
 RENDER_MODE_COMBO = [
+    RENDER_PROBE_EXPORT,
     RENDER_POLARR_PROBE,
     RENDER_NUMPY,
     "polarr",
     "numpy",
+    "probe_export",
 ]
 
 _RENDER_MODE_ALIASES = {
     "polarr": RENDER_POLARR_PROBE,
     "numpy": RENDER_NUMPY,
+    "probe_export": RENDER_PROBE_EXPORT,
 }
 
 
@@ -49,9 +57,27 @@ def _normalize_render_mode(value) -> str:
     if isinstance(value, str):
         if value in _RENDER_MODE_ALIASES:
             return _RENDER_MODE_ALIASES[value]
-        if value in (RENDER_POLARR_PROBE, RENDER_NUMPY):
+        if value in (RENDER_PROBE_EXPORT, RENDER_POLARR_PROBE, RENDER_NUMPY):
             return value
-    return RENDER_POLARR_PROBE
+    return RENDER_PROBE_EXPORT
+
+
+def _render_options() -> dict:
+    """Required combos — optional COMBO inputs break validation on saved workflows."""
+    return {
+        "lut_encoding": (
+            LUT_ENCODING_OPTIONS,
+            {"default": "srgb_srgb"},
+        ),
+        "render_mode": (
+            RENDER_MODE_COMBO,
+            {"default": RENDER_PROBE_EXPORT},
+        ),
+        "profile_stage": (
+            PROFILE_STAGE_OPTIONS,
+            {"default": "current_profile_stages"},
+        ),
+    }
 
 
 class MagicMatchLUT:
@@ -78,20 +104,6 @@ def _hwc_to_image(hwc: np.ndarray) -> torch.Tensor:
     return torch.from_numpy(hwc[np.newaxis, ...])
 
 
-def _render_options() -> dict:
-    """Required combos — optional COMBO inputs break validation on saved workflows."""
-    return {
-        "lut_encoding": (
-            LUT_ENCODING_OPTIONS,
-            {"default": "srgb_srgb"},
-        ),
-        "render_mode": (
-            RENDER_MODE_COMBO,
-            {"default": RENDER_POLARR_PROBE},
-        ),
-    }
-
-
 class MagicMatchBuild:
     """Analyze source + reference (ONNX). Wire output into MagicMatch Preview."""
 
@@ -108,7 +120,7 @@ class MagicMatchBuild:
     RETURN_NAMES = ("lut",)
     FUNCTION = "build"
     CATEGORY = "MAGICMATCH"
-    DESCRIPTION = "Build merged LUT (ONNX, PIL 256×256 — Polarr Next Probe net path)."
+    DESCRIPTION = "Build merged LUT (ONNX, probe-parity net feed: auto-light + develop@1600→256)."
 
     @classmethod
     def IS_CHANGED(cls, source, reference):
@@ -158,11 +170,20 @@ class MagicMatchPreview:
     FUNCTION = "preview"
     CATEGORY = "MAGICMATCH"
     DESCRIPTION = (
-        "Full-res output. polarr_probe = Next Probe LUT path; numpy_legacy = old CPU cube."
+        "Full-res output. probe_export = in-Comfy develop stack + LUT; "
+        "polarr_probe = LUT-only slice; numpy_legacy = old CPU cube."
     )
 
     @classmethod
-    def IS_CHANGED(cls, source, lut, strength, lut_encoding="srgb_srgb", render_mode=RENDER_POLARR_PROBE):
+    def IS_CHANGED(
+        cls,
+        source,
+        lut,
+        strength,
+        lut_encoding="srgb_srgb",
+        render_mode=RENDER_PROBE_EXPORT,
+        profile_stage="current_profile_stages",
+    ):
         import hashlib
 
         if source is None or lut is None:
@@ -170,7 +191,7 @@ class MagicMatchPreview:
         src = source.detach().cpu().numpy()
         src_key = hashlib.sha1(src.tobytes()).hexdigest()[:16]
         lut_key = hashlib.sha1(lut.merged_lut.tobytes()).hexdigest()[:16]
-        return (src_key, lut_key, float(strength), lut_encoding, render_mode)
+        return (src_key, lut_key, float(strength), lut_encoding, render_mode, profile_stage)
 
     def preview(
         self,
@@ -178,17 +199,20 @@ class MagicMatchPreview:
         lut: MagicMatchLUT,
         strength: float,
         lut_encoding: str = "srgb_srgb",
-        render_mode: str = RENDER_POLARR_PROBE,
+        render_mode: str = RENDER_PROBE_EXPORT,
+        profile_stage: str = "current_profile_stages",
     ) -> dict:
         src = _image_batch_to_hwc(source)
         lut_encoding = _normalize_lut_encoding(lut_encoding)
         render_mode = _normalize_render_mode(render_mode)
+        profile_stage = normalize_profile_stage(profile_stage)
         out = apply_merged_lut_output(
             src,
             lut.merged_lut,
             strength,
             render_mode=render_mode,
             lut_encoding=lut_encoding,
+            profile_stage=profile_stage,
         )
         cache = pack_live_cache(src, lut.merged_lut)
         return {
@@ -227,14 +251,22 @@ class MagicMatch:
     DESCRIPTION = "One-shot color match at full resolution (Polarr probe LUT apply by default)."
 
     @classmethod
-    def IS_CHANGED(cls, source, reference, strength, lut_encoding="srgb_srgb", render_mode=RENDER_POLARR_PROBE):
+    def IS_CHANGED(
+        cls,
+        source,
+        reference,
+        strength,
+        lut_encoding="srgb_srgb",
+        render_mode=RENDER_PROBE_EXPORT,
+        profile_stage="current_profile_stages",
+    ):
         import hashlib
 
         if source is None or reference is None:
             return float("nan")
         s = hashlib.sha1(source.detach().cpu().numpy().tobytes()).hexdigest()[:16]
         r = hashlib.sha1(reference.detach().cpu().numpy().tobytes()).hexdigest()[:16]
-        return (s, r, float(strength), lut_encoding, render_mode)
+        return (s, r, float(strength), lut_encoding, render_mode, profile_stage)
 
     def match(
         self,
@@ -242,12 +274,14 @@ class MagicMatch:
         reference: torch.Tensor,
         strength: float,
         lut_encoding: str = "srgb_srgb",
-        render_mode: str = RENDER_POLARR_PROBE,
+        render_mode: str = RENDER_PROBE_EXPORT,
+        profile_stage: str = "current_profile_stages",
     ) -> tuple[torch.Tensor]:
         src = _image_batch_to_hwc(source)
         ref = _image_batch_to_hwc(reference)
         lut_encoding = _normalize_lut_encoding(lut_encoding)
         render_mode = _normalize_render_mode(render_mode)
+        profile_stage = normalize_profile_stage(profile_stage)
         merged = build_merged_lut(src, ref)
         out = apply_merged_lut_output(
             src,
@@ -255,6 +289,7 @@ class MagicMatch:
             strength,
             render_mode=render_mode,
             lut_encoding=lut_encoding,
+            profile_stage=profile_stage,
         )
         return (_hwc_to_image(out),)
 

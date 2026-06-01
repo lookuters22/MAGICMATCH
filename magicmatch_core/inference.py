@@ -69,6 +69,14 @@ def run_inference_from_images(
 
 
 def build_merged_lut(source_hwc: np.ndarray, reference_hwc: np.ndarray) -> np.ndarray:
+    from .probe_parity.pipeline import build_merged_lut_probe_style
+
+    merged, _base = build_merged_lut_probe_style(source_hwc, reference_hwc)
+    return merged
+
+
+def build_merged_lut_legacy(source_hwc: np.ndarray, reference_hwc: np.ndarray) -> np.ndarray:
+    """Bare PIL 256×256 ONNX feed (pre-probe-parity)."""
     from .lut import get_merged_lut, nn_outputs_to_flat
 
     lut3d, lut1d = run_inference_from_images(source_hwc, reference_hwc)

@@ -17,11 +17,16 @@ ComfyUI custom nodes for **neural color match**: two images in, graded source ou
    pip install -r MAGICMATCH/requirements.txt
    ```
 
-3. Confirm the model file is present:
+3. Model files are included in the repo (pull gets everything):
 
    ```text
    MAGICMATCH/models/color_match.onnx
+   MAGICMATCH/models/face/face_detect_landscape.onnx
+   MAGICMATCH/models/face/face_detect_portrait.onnx
+   MAGICMATCH/models/face/face_parse.onnx
    ```
+
+   To regenerate locally (optional), use Python 3.12 + `scripts/convert_face_models_to_onnx.py` and the color-match convert script under `polarrnext/color_match_extract/`.
 
 4. Restart ComfyUI. Nodes appear under **MAGICMATCH**.
 
@@ -59,6 +64,7 @@ Live preview uses WebGL (merged 25³ LUT + strength mix). Mid-strength may diffe
 
 - ComfyUI with standard `IMAGE` tensors (batch size **1**)
 - `onnxruntime`, `numpy` (see `requirements.txt`)
+- Face auto-WB/light uses ONNX face models under `models/face/` (see install step 3)
 - CPU inference by default (~5–15s for Build on first run per pair)
 
 ## Nodes
