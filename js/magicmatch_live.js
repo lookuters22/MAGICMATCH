@@ -86,9 +86,17 @@ class LivePreviewPanel {
     this.canvas = document.createElement("canvas");
     this.canvas.style.cssText =
       "display:block;width:100%;height:auto;background:#1a1a1a;border-radius:4px;";
+  }
 
-    this.wrap.appendChild(this.hint);
-    this.wrap.appendChild(this.canvas);
+  /** Reset GL handles after canvas resize (resizing clears the WebGL context). */
+  resetGl() {
+    this.gl = null;
+    this.prog = null;
+    this.lutTex = null;
+    this.srcTex = null;
+    this.uStrength = null;
+    this.uSrc = null;
+    this.uLut = null;
   }
 
   initGl() {
@@ -176,6 +184,17 @@ class LivePreviewPanel {
     return [w, h + 32];
   }
 
+  /** Apply backing-store size; must run before initGl or call resetGl() afterward. */
+  applyCanvasSize() {
+    const dpr = window.devicePixelRatio || 1;
+    const bw = Math.max(1, Math.round(this.displayW * dpr));
+    const bh = Math.max(1, Math.round(this.displayH * dpr));
+    if (this.canvas.width === bw && this.canvas.height === bh) return false;
+    this.canvas.width = bw;
+    this.canvas.height = bh;
+    return true;
+  }
+
   uploadLut(gl, cache) {
     const floats = new Float32Array(b64ToArrayBuffer(cache.lut));
     const reshaped = reshapeMergedLutForApply(floats);
@@ -202,11 +221,13 @@ class LivePreviewPanel {
   }
 
   uploadSource(gl) {
-    if (!this._img) return;
+    if (!this._img || !this.cache) return;
+    const srcW = this.cache.w;
+    const srcH = this.cache.h;
+    this._srcCanvas.width = srcW;
+    this._srcCanvas.height = srcH;
     const ctx = this._srcCanvas.getContext("2d");
-    this._srcCanvas.width = this.displayW;
-    this._srcCanvas.height = this.displayH;
-    ctx.drawImage(this._img, 0, 0, this.displayW, this.displayH);
+    ctx.drawImage(this._img, 0, 0, srcW, srcH);
 
     gl.bindTexture(gl.TEXTURE_2D, this.srcTex);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
@@ -217,27 +238,42 @@ class LivePreviewPanel {
       gl.TEXTURE_2D,
       0,
       gl.RGBA,
+      srcW,
+      srcH,
+      0,
       gl.RGBA,
       gl.UNSIGNED_BYTE,
       this._srcCanvas,
     );
   }
 
+  ensureGlReady() {
+    if (!this.cache) return false;
+    const sizeChanged = this.applyCanvasSize();
+    if (sizeChanged) this.resetGl();
+    if (!this.initGl()) return false;
+    return true;
+  }
+
   refreshLayout() {
     if (!this.cache || !this.node.size) return;
     this.layoutFromNodeWidth(this.node.size[0]);
-    this.canvas.width = this.displayW;
-    this.canvas.height = this.displayH;
-    if (this.gl) {
-      this.uploadSource(this.gl);
-      this.render(this.getStrength());
+    if (!this.ensureGlReady()) return;
+    const gl = this.gl;
+    this.uploadLut(gl, this.cache);
+    if (this._img) {
+      this.uploadSource(gl);
+      this.drawPreview(this.getStrength());
     }
   }
 
   setCache(cache) {
     this.cache = cache;
     this.aspect = cache.w / cache.h;
-    if (!this.initGl()) return;
+    if (this.node.size) {
+      this.layoutFromNodeWidth(this.node.size[0]);
+    }
+    if (!this.ensureGlReady()) return;
 
     const gl = this.gl;
     this.uploadLut(gl, cache);
@@ -248,6 +284,10 @@ class LivePreviewPanel {
       this.hint.textContent = "Live preview (slider — no re-queue)";
       this.refreshLayout();
     };
+    img.onerror = () => {
+      this.hint.textContent = "Preview source failed to load";
+      console.error("[MAGICMATCH] failed to decode preview PNG");
+    };
     img.src = "data:image/png;base64," + cache.src_png;
   }
 
@@ -256,10 +296,17 @@ class LivePreviewPanel {
     return w ? Number(w.value) : 1.0;
   }
 
-  render(strength) {
-    if (!this.cache || !this.gl || !this.prog) return;
+  drawPreview(strength) {
+    if (!this.ensureGlReady()) return;
     const gl = this.gl;
-    gl.viewport(0, 0, this.displayW, this.displayH);
+    if (this._img) this.uploadSource(gl);
+    this.render(strength);
+  }
+
+  render(strength) {
+    if (!this.cache || !this.gl || !this.prog || !this._img) return;
+    const gl = this.gl;
+    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     gl.useProgram(this.prog);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.srcTex);
@@ -298,6 +345,9 @@ app.registerExtension({
       serialize: false,
     });
 
+    panel.wrap.appendChild(panel.hint);
+    panel.wrap.appendChild(panel.canvas);
+
     domWidget.computeSize = function (width) {
       if (panel.cache) {
         return panel.layoutFromNodeWidth(width);
@@ -317,7 +367,7 @@ app.registerExtension({
       const prev = strengthWidget.callback;
       strengthWidget.callback = function (v, ...rest) {
         if (prev) prev.call(this, v, ...rest);
-        panel.render(Number(v));
+        panel.drawPreview(Number(v));
       };
     }
   },
@@ -334,8 +384,6 @@ app.registerExtension({
       if (!graphNode || graphNode.comfyClass !== PREVIEW_CLASS) return;
 
       getPanel(graphNode).setCache(out.magicmatch_live[0]);
-      const sw = graphNode.widgets?.find((w) => w.name === "strength");
-      if (sw) getPanel(graphNode).render(Number(sw.value));
     });
   },
 });
