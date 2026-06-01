@@ -106,6 +106,7 @@ def _prior_portrait() -> PriorBox:
 
 @lru_cache(maxsize=1)
 def _landscape_session() -> ort.InferenceSession:
+    # CPU parity; optional CUDA path: probe_parity/face_detection_cuda.py
     path = FACE_MODEL_DIR / "face_detect_landscape.onnx"
     if not path.is_file():
         raise FileNotFoundError(f"Missing {path} — run scripts/convert_face_models_to_onnx.py")

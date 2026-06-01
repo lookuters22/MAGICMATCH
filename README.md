@@ -67,7 +67,55 @@ Live preview uses WebGL (merged 25³ LUT + strength mix). Mid-strength may diffe
 - Face auto-WB/light uses ONNX face models under `models/face/` (see install step 3)
 - CPU inference by default (~5–15s for Build on first run per pair)
 
-## Nodes
+## CUDA inference (experimental)
+
+A **separate** GPU path lives alongside the CPU parity stack — default nodes and
+`scripts/parity_pair.py` golden checks are unchanged.
+
+### Install (H100 / Linux)
+
+```bash
+# In ComfyUI's venv — onnxruntime and onnxruntime-gpu are mutually exclusive on many builds
+pip uninstall -y onnxruntime
+pip install -r MAGICMATCH/requirements-cuda.txt
+```
+
+Requires NVIDIA driver + CUDA libs compatible with your `onnxruntime-gpu` wheel.
+On Windows or machines without CUDA, CUDA nodes fall back to CPU EP automatically.
+
+### ComfyUI nodes
+
+After restart, look under **MAGICMATCH/CUDA (experimental)**:
+
+| Class | Display name |
+|-------|----------------|
+| `MagicMatchBuildCUDA` | MagicMatch Build LUT (CUDA) |
+| `MagicMatchPreviewCUDA` | MagicMatch Preview (CUDA LUT) |
+| `MagicMatchCUDA` | MagicMatch one-shot (CUDA) |
+
+Preview/apply still uses the CPU NumPy develop stack; only ONNX `sess.run` moves to GPU.
+
+Set `MAGICMATCH_CUDA_NODES=0` before starting ComfyUI to hide CUDA nodes (CPU-only menu).
+
+### Benchmark / parity
+
+```bash
+# CPU golden (must stay parity_ok)
+python scripts/parity_pair.py \
+  ../polarrnext/standalone_probe/public/pair/source.png \
+  ../polarrnext/standalone_probe/public/pair/reference.jpg
+
+# CPU vs CUDA timings + lut_hash compare
+python scripts/bench_cuda_vs_cpu.py \
+  ../polarrnext/standalone_probe/public/pair/source.png \
+  ../polarrnext/standalone_probe/public/pair/reference.jpg
+```
+
+Expected golden `lut_hash` on the polarrnext/pair test set: `a48758ca22a2e389`.
+CUDA may differ slightly if GPU face-detect scores diverge from CPU f16 quirks; compare
+`lut_max_abs_delta` in the bench report.
+
+## Nodes (CPU default)
 
 | Class | Display name |
 |-------|----------------|

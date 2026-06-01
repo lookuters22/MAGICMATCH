@@ -1,0 +1,6 @@
+# Optional GPU inference for MAGICMATCH (H100 / Linux).
+# Mutually exclusive with the CPU-only `onnxruntime` wheel on many platforms:
+# uninstall onnxruntime before installing onnxruntime-gpu.
+onnxruntime-gpu>=1.18
+numpy>=1.24
+Pillow>=9.0

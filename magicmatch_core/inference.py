@@ -80,6 +80,7 @@ def get_session(onnx_path: str | Path | None = None) -> ort.InferenceSession:
             "Expected: MAGICMATCH/models/color_match.onnx in this custom node folder."
         )
     if _SESSION is None:
+        # CPU parity default; optional CUDA path: magicmatch_core/inference_cuda.py
         _SESSION = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
     return _SESSION
 
