@@ -77,9 +77,7 @@ class MagicMatchBuildGPUFull:
         ref_np = _image_batch_to_hwc(reference)
         feed_t = _image_batch_to_feed_tensor(source)
         ref_t = reference[0].detach().float().clamp(0.0, 1.0)
-        if gpu_pipeline_available() and ref_t.is_cuda:
-            ref_t = ref_t
-        else:
+        if not (gpu_pipeline_available() and ref_t.is_cuda):
             ref_t = hwc_numpy_to_torch(ref_np)
         state = build_merged_lut_full_gpu(
             src_np,
