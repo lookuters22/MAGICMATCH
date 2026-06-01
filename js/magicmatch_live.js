@@ -43,7 +43,7 @@ function reshapedLutTo3DUint8(reshaped) {
     for (let g = 0; g < size; g++) {
       for (let r = 0; r < size; r++) {
         const idx = b * size * size + g * size + r;
-        const dst = idx * 4;
+        const dst = (b + g * size + r * size * size) * 4;
         tex[dst] = byte(reshaped[0 * n + idx]);
         tex[dst + 1] = byte(reshaped[1 * n + idx]);
         tex[dst + 2] = byte(reshaped[2 * n + idx]);
