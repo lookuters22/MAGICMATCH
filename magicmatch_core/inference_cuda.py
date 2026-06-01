@@ -103,10 +103,10 @@ def build_merged_lut_with_base_cuda(
     source_hwc: np.ndarray,
     reference_hwc: np.ndarray,
 ) -> tuple[np.ndarray, dict]:
-    """CPU parity scene extract + develop; CUDA ONNX only (golden LUT path)."""
-    from .probe_parity.pipeline_cuda import build_merged_lut_probe_style_cuda
+    """GPU develop + CUDA ONNX build (1ccd29d-style; used by CUDA ComfyUI nodes)."""
+    from .gpu.pipeline_v1 import build_merged_lut_probe_style_gpu_v1
 
-    return build_merged_lut_probe_style_cuda(source_hwc, reference_hwc)
+    return build_merged_lut_probe_style_gpu_v1(source_hwc, reference_hwc)
 
 
 def color_match_session_info() -> dict[str, str | bool]:
