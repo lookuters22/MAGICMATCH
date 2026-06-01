@@ -56,6 +56,14 @@ class MagicMatchBuild:
     CATEGORY = "MAGICMATCH"
     DESCRIPTION = "Build merged color-match LUT from source + reference (run once per image pair)."
 
+    @classmethod
+    def IS_CHANGED(cls, source, reference):
+        import hashlib
+
+        s = hashlib.sha1(source.detach().cpu().numpy().tobytes()).hexdigest()[:16]
+        r = hashlib.sha1(reference.detach().cpu().numpy().tobytes()).hexdigest()[:16]
+        return (s, r)
+
     def build(self, source: torch.Tensor, reference: torch.Tensor) -> tuple[MagicMatchLUT]:
         src = _image_batch_to_hwc(source)
         ref = _image_batch_to_hwc(reference)
@@ -86,6 +94,14 @@ class MagicMatchPreview:
                         "display": "slider",
                     },
                 ),
+                "auto_refresh": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "label_on": "on",
+                        "label_off": "off",
+                    },
+                ),
             },
         }
 
@@ -94,15 +110,26 @@ class MagicMatchPreview:
     FUNCTION = "preview"
     CATEGORY = "MAGICMATCH"
     DESCRIPTION = (
-        "Preview color match at chosen strength (0=source, 1=full match). "
-        "Re-queue after moving the slider — only this node re-runs."
+        "Preview color match at chosen strength. With auto_refresh on, moving the "
+        "slider re-runs this node automatically (Build LUT stays cached)."
     )
+
+    @classmethod
+    def IS_CHANGED(cls, source, lut, strength, auto_refresh=True):
+        # Re-run when strength changes; Build LUT node is unchanged and stays cached.
+        import hashlib
+
+        src = source.detach().cpu().numpy()
+        src_key = hashlib.sha1(src.tobytes()).hexdigest()[:16]
+        lut_key = hashlib.sha1(lut.merged_lut.tobytes()).hexdigest()[:16]
+        return (src_key, lut_key, float(strength))
 
     def preview(
         self,
         source: torch.Tensor,
         lut: MagicMatchLUT,
         strength: float,
+        auto_refresh: bool = True,
     ) -> tuple[torch.Tensor]:
         src = _image_batch_to_hwc(source)
         strength = float(np.clip(strength, 0.0, 1.0))
