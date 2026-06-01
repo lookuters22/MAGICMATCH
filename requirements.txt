@@ -1,0 +1,2 @@
+onnxruntime>=1.18
+numpy>=1.24
