@@ -54,12 +54,7 @@ def run_inference_from_images_cuda(
     *,
     session: ort.InferenceSession | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Run color_match.onnx on GPU when CUDA EP is available; CPU fallback otherwise."""
-    if _TORCH and torch.cuda.is_available():
-        from .gpu.device import hwc_numpy_to_torch
-
-        src_t = hwc_numpy_to_torch(source_hwc, torch.device("cuda"))
-        return run_inference_from_images_cuda_tensors(src_t, reference_hwc, session=session)
+    """Run color_match.onnx on GPU EP with CPU-parity ORT feeds (LANCZOS+bilinear)."""
     sess = session or get_session_cuda()
     feeds = {
         INPUT_NAMES[0]: _resize_hwc_to_nhwc(source_hwc),
